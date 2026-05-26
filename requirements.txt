@@ -1,0 +1,10 @@
+
+streamlit
+pandas
+numpy
+scikit-learn
+plotly
+gspread
+oauth2client
+openpyxl
+joblib
