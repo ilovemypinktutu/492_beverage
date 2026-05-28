@@ -296,21 +296,21 @@ def _draw_correlated_others(ms: MarketState, role: str,
     c1wc_default = PRODUCT_DEFAULTS[c1_name]["wc_default"]
     c2wc_default = PRODUCT_DEFAULTS[c2_name]["wc_default"]
 
-    sigma_price = 0.12   # ~12% price noise
-    sigma_ad    = 0.15   # ~15% ad noise
-    sigma_wc    = 0.10   # ~10% wholesale noise
+    sigma_price = 0.18   # ~18% price noise (raised so movement is visible)
+    sigma_ad    = 0.20   # ~20% ad noise
+    sigma_wc    = 0.15   # ~15% wholesale noise (raised so movement is visible)
 
     if role == "price_setter":
         own_sig = choice_val
         own_def = own_price_default
-        corr_prices = 0.65   # competitors respond to your price (strategic complementarity)
-        corr_ad     = 0.30
-        corr_wc     = 0.20
+        corr_prices = 0.70   # competitors respond to your price (strategic complementarity)
+        corr_ad     = 0.40
+        corr_wc     = 0.60   # wholesale co-moves with market price (common cost shock)
         c1p = noisy(c1p_default, corr_prices, own_sig, own_def, sigma_price)
         c2p = noisy(c2p_default, corr_prices, own_sig, own_def, sigma_price)
         c1a = noisy(c1a_default, corr_ad, own_sig, own_def, sigma_ad)
         c2a = noisy(c2a_default, corr_ad, own_sig, own_def, sigma_ad)
-        own_ad = noisy(own_ad_default, 0.0, 0, 0, sigma_ad * 0.5)
+        own_ad = noisy(own_ad_default, 0.35, own_sig, own_def, sigma_ad)
         c1wc = noisy(c1wc_default, corr_wc, own_sig, own_def, sigma_wc)
         c2wc = noisy(c2wc_default, corr_wc, own_sig, own_def, sigma_wc)
         own_wc = noisy(own_wc_default, corr_wc, own_sig, own_def, sigma_wc)
@@ -381,11 +381,7 @@ def render_choice_slider(ms: MarketState, role: str):
         val = st.slider("Retail price", 0.50, 8.00, float(ms.own_price), 0.01,
                         key="main_choice",
                         help="Your primary decision. Move to explore how profit changes.")
-        st.caption(
-            f"Selected: **${val:.2f}/unit** · "
-            f"Wholesale cost: **${ms.wholesale_cost:.2f}** · "
-            f"Margin/unit: **${val - ms.wholesale_cost:.2f}**"
-        )
+        st.caption(f"Selected: **${val:.2f}/unit**")
     elif role == "ad_manager":
         st.markdown("<h3>📢 Set Your Ad Spend ($K/week)</h3>",
                     unsafe_allow_html=True)
@@ -399,12 +395,7 @@ def render_choice_slider(ms: MarketState, role: str):
         val = st.slider("Wholesale price to retailer", 0.20, 5.00,
                         float(ms.wholesale_cost), 0.05, key="main_choice",
                         help="Higher WC earns more margin per unit but reduces retailer supply volume.")
-        uc = val * 0.40
-        st.caption(
-            f"Selected: **${val:.2f}/unit** · "
-            f"Your unit cost: **${uc:.2f}** · "
-            f"Your margin: **${val - uc:.2f}/unit**"
-        )
+        st.caption(f"Selected: **${val:.2f}/unit**")
 
     if not exp_mode:
         st.caption(
@@ -468,6 +459,14 @@ def render_results_table(eq: EquilibriumResult, fin: Financials,
 
     st.dataframe(pd.DataFrame([row]), use_container_width=True, hide_index=True)
 
+    # Inline term definitions (items 5 & 6)
+    st.caption(
+        "ℹ️ **COGS** (Cost of Goods Sold) = Wholesale cost × Units sold — "
+        "the direct cost of acquiring the inventory you sold.  "
+        "**Gross Profit** = Revenue − COGS — profit before operating expenses.  "
+        "**Net Profit** = EBIT × (1 − tax rate) — the bottom line after all costs and taxes."
+    )
+
     # Profit signal
     if fin.net_profit > 0:
         st.success(f"✅ Profitable — Net profit **{fmtk(fin.net_profit)}**/week")
@@ -496,18 +495,43 @@ def render_history(eq: EquilibriumResult, fin: Financials,
 
     mode = "Correlated" if not st.session_state.get("experiment_mode") else "Free-play"
     new_row = {
-        "Scenario":        scenario,
-        "Mode":            mode,
-        choice_col:        choice_disp,
-        "Eq. Price":       round(eq.price_eq, 4),
-        "Units Sold":      int(fin.q_sold),
-        "Revenue ($)":     round(fin.revenue, 2),
-        "COGS ($)":        round(fin.cogs, 2),
-        "Gross Profit ($)":round(fin.gross_profit, 2),
-        "OpEx ($)":        round(fin.total_opex, 2),
-        "Net Profit ($)":  round(fin.net_profit, 2),
-        "Gross Margin (%)":round(fin.gross_margin_pct, 2),
-        "Net Margin (%)":  round(fin.net_margin_pct, 2),
+        # ── Choice variable ──
+        choice_col:              choice_disp,
+        # ── Financial outcomes ──
+        "Eq. Price ($)":         round(eq.price_eq, 4),
+        "Units Sold":            int(fin.q_sold),
+        "Revenue ($)":           round(fin.revenue, 2),
+        "COGS ($)":              round(fin.cogs, 2),
+        "Gross Profit ($)":      round(fin.gross_profit, 2),
+        "OpEx ($)":              round(fin.total_opex, 2),
+        "Net Profit ($)":        round(fin.net_profit, 2),
+        "Gross Margin (%)":      round(fin.gross_margin_pct, 2),
+        "Net Margin (%)":        round(fin.net_margin_pct, 2),
+        # ── Competitor choice variables (correlated draws) ──
+        "Comp1 Price ($)":       round(ms.comp1_price, 4),
+        "Comp2 Price ($)":       round(ms.comp2_price, 4),
+        "Comp1 Ad ($K/wk)":      round(ms.comp1_ad_k, 2),
+        "Comp2 Ad ($K/wk)":      round(ms.comp2_ad_k, 2),
+        "Comp1 Wholesale ($)":   round(ms.comp1_wholesale, 4),
+        "Comp2 Wholesale ($)":   round(ms.comp2_wholesale, 4),
+        "Own Wholesale ($)":     round(ms.wholesale_cost, 4),
+        "Own Ad ($K/wk)":        round(ms.ad_spend_k, 2),
+        # ── Market conditions ──
+        "Local Income ($K/yr)":  round(ms.local_income_k, 1),
+        "Unemployment (%)":      round(ms.unemployment_pct, 1),
+        "Pop Density":           round(ms.pop_density, 0),
+        "Temperature (°F)":      round(ms.temperature_f, 1),
+        "Season Index":          round(ms.season_index, 2),
+        "Consumer Sat":          round(ms.consumer_sat, 1),
+        "Employee Sat":          round(ms.employee_sat, 1),
+        "Health Trend":          round(ms.health_trend, 2),
+        "Input Scarcity":        round(ms.input_scarcity, 2),
+        "Reg. Burden":           round(ms.regulatory_burden, 2),
+        "Energy Cost Idx":       round(ms.energy_cost_idx, 2),
+        "Store Count":           int(ms.store_count),
+        "Cap. Utilization (%)":  round(ms.capacity_util_pct, 1),
+        # ── Mode ──
+        "Mode":                  mode,
     }
     if role == "manufacturer":
         new_row["Mfr Revenue ($)"] = round(fin.manufacturer_revenue, 2)

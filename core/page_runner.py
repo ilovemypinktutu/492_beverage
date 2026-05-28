@@ -1,18 +1,19 @@
 """
 core/page_runner.py — Single entry point for all 9 role pages.
 
-Layout order (per spec):
+Layout order:
   1. Banner
-  2. Decision slider (choice variable)
-  3. Shock banner (always active)
-  4. Equilibrium alert
-  5. Results table
-  6. Decision history (auto-recorded, downloadable)
-  7. Market Charts (at the bottom)
-  8. Footer
+  2. Decision slider (choice variable only — no other variable info shown)
+  3. Results table + term definitions
+  4. Decision history (auto-recorded, with market conditions, downloadable)
+  5. Market Charts (at the bottom)
+  6. Footer
+
+Items 7 & 8: Active shock banner and equilibrium alert are NOT shown
+before/during slider interaction — only the results table appears after
+the computation, keeping the UI clean and focused on the student's choice.
 """
 from __future__ import annotations
-import dataclasses
 import streamlit as st
 
 from core.model import (
@@ -24,9 +25,8 @@ from core.ui import (
     inject_css, role_banner,
     render_sidebar_nav, render_sidebar, render_shock_controls,
     render_choice_slider,
-    render_eq_alert, render_results_table,
+    render_results_table,
     render_history, render_charts,
-    _shock_banner,
     PRODUCT_EMOJI, ROLE_LABEL, ROLE_EMOJI,
 )
 
@@ -87,30 +87,25 @@ def run_page(product: str, role: str) -> None:
     state_key = f"ms_{product}_{role}_v{_MARKET_STATE_VERSION}"
     ms_base = _get_or_reset_ms(state_key, product)
 
-    # ── Sidebar: fixed market conditions only (no choice vars, no shocks) ──
+    # ── Sidebar: fixed market conditions only ──
     ms_after_sidebar = render_sidebar(ms_base, role)
 
-    # ── Shocks: always on, auto seed ──
-    ms_after_shocks, active_shocks = render_shock_controls(ms_after_sidebar)
+    # ── Shocks: always on, auto seed — applied silently, no sidebar UI ──
+    ms_after_shocks, _active_shocks = render_shock_controls(ms_after_sidebar)
 
-    # ── Main: decision slider + correlated draw ──
+    # ── Main: decision slider (shows ONLY the student's choice variable) ──
+    # Items 7, 8, 9: no shock banner, no equilibrium alert, no other variable info
     ms_final, choice_val = render_choice_slider(ms_after_shocks, role)
     st.session_state[state_key] = ms_final
 
-    # ── Shock banner ──
-    _shock_banner(active_shocks, ms_final)
-
-    # ── Equilibrium ──
+    # ── Solve equilibrium ──
     eq  = find_equilibrium(ms_final)
     fin = compute_financials(eq, ms_final)
 
-    # ── Equilibrium alert ──
-    render_eq_alert(ms_final, eq, role)
-
-    # ── Results table ──
+    # ── Results table (with COGS/Gross Profit/Net Profit tooltips) ──
     render_results_table(eq, fin, ms_final, role, choice_val)
 
-    # ── Decision history (auto-recorded, with Excel download) ──
+    # ── Decision history (auto-recorded, includes market conditions) ──
     render_history(eq, fin, ms_final, role, choice_val, scenario="")
 
     # ── Market Charts — at the bottom ──
