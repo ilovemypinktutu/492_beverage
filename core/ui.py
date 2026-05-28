@@ -1,10 +1,9 @@
 """
-core/ui.py
-==========
-Shared Streamlit UI helpers, CSS, metric cards, and chart builders.
-Imported by app.py and all role pages.
+core/ui.py — Shared Streamlit UI helpers, CSS, metric cards, chart builders,
+             glossary, and shock controls.
 """
 from __future__ import annotations
+import dataclasses
 import math
 import streamlit as st
 import plotly.graph_objects as go
@@ -13,12 +12,19 @@ from core.model import (
     MarketState, EquilibriumResult, Financials,
     find_equilibrium, compute_financials,
     sweep_price, sweep_ad, sweep_wholesale,
+    draw_shocks, apply_shocks,
     PRODUCT_DEFAULTS,
 )
 
 # ---------------------------------------------------------------------------
-# Brand palette
+# Color helpers  — Plotly requires proper rgba(), not hex+alpha-suffix
 # ---------------------------------------------------------------------------
+def _hex_to_rgba(hex_color: str, alpha: float = 0.12) -> str:
+    """Convert '#RRGGBB' to 'rgba(r,g,b,alpha)' for Plotly fillcolor."""
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f"rgba({r},{g},{b},{alpha})"
+
 PRODUCT_COLOR = {
     "coffee": "#6F4E37",
     "soda":   "#1B3A6B",
@@ -33,26 +39,21 @@ ROLE_LABEL    = {
 }
 
 # ---------------------------------------------------------------------------
-# CSS injection
+# CSS
 # ---------------------------------------------------------------------------
 def inject_css(product: str = "soda") -> None:
     color = PRODUCT_COLOR.get(product, "#1B3A6B")
     st.markdown(f"""
 <style>
-  /* ── global ── */
   [data-testid="stSidebar"] {{ background: #F4F6FB; }}
   .block-container {{ padding-top: 1.2rem; }}
-
-  /* ── role banner ── */
   .role-banner {{
-    background: linear-gradient(135deg, {color}EE, {color}99);
+    background: linear-gradient(135deg, {color}dd, {color}88);
     border-radius: 12px; padding: 1rem 1.5rem;
     color: white; margin-bottom: 1.2rem;
   }}
   .role-banner h2 {{ margin: 0; font-size: 1.5rem; }}
   .role-banner p  {{ margin: 0.2rem 0 0; font-size: 0.88rem; opacity: 0.9; }}
-
-  /* ── metric cards ── */
   .mc {{
     background: #F7FAFD; border-radius: 10px;
     padding: 0.85rem 1.1rem; border-left: 4px solid {color};
@@ -64,21 +65,24 @@ def inject_css(product: str = "soda") -> None:
   .mc .sub {{ font-size: 0.72rem; color: #888; margin-top: 2px; }}
   .pos {{ color: #1a7a45 !important; }}
   .neg {{ color: #c0392b !important; }}
-
-  /* ── section header ── */
   .shdr {{
     font-size: 1rem; font-weight: 700; color: {color};
     border-bottom: 2px solid #E0E8F0;
     padding-bottom: 4px; margin: 1.1rem 0 0.7rem;
   }}
-
-  /* ── choice slider highlight ── */
   .choice-box {{
-    background: linear-gradient(135deg, {color}18, {color}08);
+    background: {_hex_to_rgba(color, 0.06)};
     border: 1.5px solid {color}55; border-radius: 12px;
     padding: 1rem 1.2rem; margin-bottom: 1rem;
   }}
   .choice-box h3 {{ color: {color}; margin: 0 0 0.5rem; font-size: 1.05rem; }}
+  .shock-box {{
+    background: #FFF8EC; border: 1px solid #F5A623;
+    border-radius: 10px; padding: 0.8rem 1rem; margin-bottom: 0.8rem;
+  }}
+  .shock-box p {{ margin: 0; font-size: 0.82rem; color: #7A5500; }}
+  .gloss-term {{ font-weight: 700; color: {color}; }}
+  .gloss-def  {{ color: #444; font-size: 0.88rem; margin-bottom: 0.6rem; }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -93,7 +97,6 @@ def fmtk(v: float) -> str:
     if av >= 1_000:     return f"{sign}${av/1e3:,.1f}K"
     return f"{sign}${av:,.2f}"
 
-
 def metric_card(label: str, value: str, sub: str = "",
                 profit: bool | None = None) -> None:
     extra = " pos" if profit is True else (" neg" if profit is False else "")
@@ -104,19 +107,15 @@ def metric_card(label: str, value: str, sub: str = "",
       <div class="sub">{sub}</div>
     </div>""", unsafe_allow_html=True)
 
-
 def section(title: str) -> None:
     st.markdown(f'<div class="shdr">{title}</div>', unsafe_allow_html=True)
 
-
 def role_banner(product: str, role: str) -> None:
-    color = PRODUCT_COLOR.get(product, "#1B3A6B")
-    pe    = PRODUCT_EMOJI[product]
-    re    = ROLE_EMOJI[role]
-    rl    = ROLE_LABEL[role]
-    comp  = PRODUCT_DEFAULTS[product]
-    c1    = comp["comp1"].title()
-    c2    = comp["comp2"].title()
+    pe  = PRODUCT_EMOJI[product]
+    re  = ROLE_EMOJI[role]
+    rl  = ROLE_LABEL[role]
+    d   = PRODUCT_DEFAULTS[product]
+    c1  = d["comp1"].title(); c2 = d["comp2"].title()
     st.markdown(f"""
     <div class="role-banner">
       <h2>{pe} {product.title()} Market &nbsp;·&nbsp; {re} {rl}</h2>
@@ -126,48 +125,198 @@ def role_banner(product: str, role: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Sidebar — student-visible controls only (role-dependent)
+# Glossary
 # ---------------------------------------------------------------------------
-def render_sidebar(ms: MarketState, role: str) -> MarketState:
+GLOSSARY: list[tuple[str, str, str]] = [
+    # (term, symbol, definition)
+    ("Equilibrium Price",     "P*",
+     "The price at which quantity demanded equals quantity supplied. "
+     "The market 'clears' — no unsold inventory and no unmet demand."),
+    ("Equilibrium Quantity",  "Q*",
+     "The quantity bought and sold when the market is in equilibrium."),
+    ("Quantity Demanded",     "Qd",
+     "The total amount consumers wish to buy at a given price. "
+     "Falls when own price rises; rises when competitor prices rise."),
+    ("Quantity Supplied",     "Qs",
+     "The total amount sellers are willing and able to offer at a given price. "
+     "Rises with price; falls when wholesale cost or upstream power increases."),
+    ("Quantity Sold",         "Q_sold",
+     "min(Qd, Qs) — actual units transacted. Below equilibrium price, "
+     "supply is the constraint; above it, demand is."),
+    ("Own-Price Elasticity",  "ε_pp",
+     "% change in Qd for a 1% change in own price. "
+     "Modelled as a1 (log term) + 2·a_pp·P (quadratic gradient). "
+     "Coffee: −1.4, Soda: −1.6, Beer: −1.5 at baseline."),
+    ("Cross-Price Elasticity","ε_pc",
+     "% change in Qd for a 1% change in a competitor's price. "
+     "Positive — when Soda raises its price, Coffee demand rises."),
+    ("Advertising Elasticity","ε_adv",
+     "% increase in Qd per 1% increase in ad spend. "
+     "Diminishing returns captured by a_adv2·Adv² — doubling spend "
+     "less than doubles demand."),
+    ("Wholesale Cost",        "WC",
+     "The price the manufacturer charges the retailer per unit. "
+     "Raises COGS and shifts the supply curve left (higher WC → lower Qs)."),
+    ("Contribution Margin",   "CM",
+     "Revenue per unit minus variable cost per unit: P − WC. "
+     "Must be positive for each unit sold to contribute to covering fixed costs."),
+    ("Break-Even Volume",     "BEP",
+     "Units/week at which total contribution exactly covers total fixed operating "
+     "expenses: BEP = OpEx ÷ CM. Below this volume the firm loses money."),
+    ("COGS",                  "COGS",
+     "Cost of Goods Sold = WC × Q_sold. The direct cost of inventory."),
+    ("EBIT",                  "EBIT",
+     "Earnings Before Interest & Tax = Gross Profit − OpEx. "
+     "Proxy for operating performance before financing and tax effects."),
+    ("Net Profit",            "π",
+     "EBIT × (1 − tax rate). The bottom line after all costs and taxes."),
+    ("Upstream Market Power", "UP",
+     "Index [0, 1] measuring the bottler/supplier's bargaining strength. "
+     "Enters supply as a cubic: b5·UP + b6·UP² + b7·UP³ — "
+     "accelerating margin compression up to near-monopoly levels."),
+    ("Idiosyncratic Shock",   "ε",
+     "Random disturbance unique to one product-period. "
+     "ε_d enters ln(Qd); ε_s enters ln(Qs). Both have std ≈ 6–8%."),
+    ("Correlated Shock",      "η",
+     "Market-wide or sector-wide disturbance affecting all products simultaneously "
+     "(e.g. a sugar-price spike or a consumer health scare). "
+     "Own shocks are correlated (ρ ≈ 0.55) with a common sector factor; "
+     "competitor choice variables also shift via multiplicative η terms."),
+    ("Common Sector Shock",   "z₀",
+     "A single normally-distributed draw that drives correlation across all products "
+     "and between demand and supply. Simulates macro events — recessions, "
+     "regulatory announcements, input-cost movements."),
+    ("Interior Profit Maximum","π*",
+     "A maximum of the profit function that occurs strictly inside the "
+     "feasible range of the choice variable (not at a boundary). "
+     "Exists here because demand falls steeply at high prices (quadratic term) "
+     "and ad returns diminish; finding π* is the core learning objective."),
+    ("Season Index",          "S",
+     "Multiplier on beverage demand: 1.0 = average, 1.5 = peak summer, "
+     "0.5 = winter trough. Enters as a14·ln(S)."),
+    ("Log-Linear Term",       "a·ln(x)",
+     "A term of the form coefficient × natural-log(variable). "
+     "Implies constant elasticity: a 1% change in x shifts ln(Q) by a percentage points."),
+    ("Quadratic Term",        "a·x²",
+     "Adds curvature to the relationship. In demand, a_pp·P² makes "
+     "the price effect stronger at higher prices, generating a profit peak. "
+     "In supply, b_wc2·WC² accelerates the cost squeeze."),
+    ("Cubic Term",            "a·x³",
+     "Creates an S-curve or inflection in the relationship. "
+     "Used for the time trend (growth → plateau → slow revival) and "
+     "upstream power (mild compression → severe → slight relief at monopoly)."),
+]
+
+def render_glossary() -> None:
+    section("📖 Glossary of Terms & Variables")
+    search = st.text_input("Filter glossary", placeholder="e.g. elasticity, shock, profit…",
+                           key="gloss_search", label_visibility="collapsed")
+    query = search.strip().lower()
+    shown = [(t, sym, d) for t, sym, d in GLOSSARY
+             if not query or query in t.lower() or query in d.lower() or query in sym.lower()]
+    if not shown:
+        st.caption("No matching terms. Try a shorter keyword.")
+        return
+    for term, sym, defn in shown:
+        st.markdown(
+            f'<p><span class="gloss-term">{term}</span> '
+            f'<code style="font-size:0.78rem">{sym}</code><br>'
+            f'<span class="gloss-def">{defn}</span></p>',
+            unsafe_allow_html=True,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Shock panel (sidebar)
+# ---------------------------------------------------------------------------
+def render_shock_controls(ms: MarketState) -> tuple[MarketState, dict | None]:
     """
-    Render only the controls the student is allowed to see and modify.
-    Returns an updated MarketState.
+    Render shock/noise controls in the sidebar.
+    Returns (updated_ms_with_shocks, shocks_dict_or_None).
     """
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("#### 🎲 Market Shocks")
+    st.sidebar.caption(
+        "Simulate random market disturbances. Shocks are correlated across "
+        "products and between demand and supply."
+    )
+    use_shocks = st.sidebar.toggle("Enable random shocks", value=False, key="use_shocks")
+
+    if not use_shocks:
+        return ms, None
+
+    seed = st.sidebar.number_input(
+        "Random seed (change to draw new shocks)", min_value=0, max_value=9999,
+        value=42, step=1, key="shock_seed",
+        help="Same seed = same shock draw. Change to explore different scenarios."
+    )
+    shocks = draw_shocks(seed=int(seed))
+    ms_with = apply_shocks(ms, shocks)
+
+    # Show shock magnitudes compactly
+    col1, col2 = st.sidebar.columns(2)
+    d_pct = (math.exp(shocks["eps_d"]) - 1) * 100
+    s_pct = (math.exp(shocks["eps_s"]) - 1) * 100
+    col1.metric("Demand shock", f"{d_pct:+.1f}%")
+    col2.metric("Supply shock", f"{s_pct:+.1f}%")
+
+    d = PRODUCT_DEFAULTS[ms.product]
+    c1 = d["comp1"].title(); c2 = d["comp2"].title()
+    st.sidebar.caption(
+        f"{c1} price shock: {(shocks['eta_c1p']-1)*100:+.1f}%  |  "
+        f"{c2} price shock: {(shocks['eta_c2p']-1)*100:+.1f}%"
+    )
+    return ms_with, shocks
+
+
+def _shock_banner(shocks: dict | None, ms: MarketState) -> None:
+    if not shocks:
+        return
+    d_pct = (math.exp(shocks["eps_d"]) - 1) * 100
+    s_pct = (math.exp(shocks["eps_s"]) - 1) * 100
+    d = PRODUCT_DEFAULTS[ms.product]
+    c1 = d["comp1"].title(); c2 = d["comp2"].title()
+    c1p = (shocks["eta_c1p"] - 1) * 100
+    c2p = (shocks["eta_c2p"] - 1) * 100
+    st.markdown(
+        f'<div class="shock-box"><p>'
+        f'⚡ <strong>Active market shocks</strong> (seed {st.session_state.get("shock_seed", 42)}) — '
+        f'Demand: <strong>{d_pct:+.1f}%</strong>, '
+        f'Supply: <strong>{s_pct:+.1f}%</strong>, '
+        f'{c1} price: <strong>{c1p:+.1f}%</strong>, '
+        f'{c2} price: <strong>{c2p:+.1f}%</strong>'
+        f'</p></div>',
+        unsafe_allow_html=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Sidebar — student market controls
+# ---------------------------------------------------------------------------
+def render_sidebar(ms: MarketState, role: str):
     product = ms.product
     d       = PRODUCT_DEFAULTS[product]
-    color   = PRODUCT_COLOR[product]
     c1_name = d["comp1"].title()
     c2_name = d["comp2"].title()
     emoji   = PRODUCT_EMOJI[product]
 
     st.sidebar.markdown(f"## {emoji} Market Controls")
     st.sidebar.caption(
-        "Adjust the variables below. Your primary decision variable "
-        "is shown on the main page."
+        "Adjust market variables. Your primary decision is on the main page."
     )
 
-    # ── Competitor prices (always visible) ──
-    with st.sidebar.expander(f"🏷️ Competitor Retail Prices", expanded=True):
+    with st.sidebar.expander("🏷️ Competitor Retail Prices", expanded=True):
         comp1_price = st.sidebar.slider(
-            f"{c1_name} price ($/unit)",
-            0.50, 8.00, float(ms.comp1_price), 0.05,
-            key="cp1")
+            f"{c1_name} price ($/unit)", 0.50, 8.00,
+            float(ms.comp1_price), 0.05, key="cp1")
         comp2_price = st.sidebar.slider(
-            f"{c2_name} price ($/unit)",
-            0.50, 8.00, float(ms.comp2_price), 0.05,
-            key="cp2")
+            f"{c2_name} price ($/unit)", 0.50, 8.00,
+            float(ms.comp2_price), 0.05, key="cp2")
 
-    # ── Ad spends (all three visible, own ad is primary for ad_manager) ──
-    with st.sidebar.expander("📢 Advertising Spend ($K/week)", expanded=True):
-        if role == "ad_manager":
-            # Own ad spend is the main decision — shown in sidebar too for compactness
-            own_ad = st.sidebar.slider(
-                f"Your {product.title()} ad spend", 1.0, 300.0,
-                float(ms.ad_spend_k), 1.0, key="own_ad")
-        else:
-            own_ad = st.sidebar.slider(
-                f"{product.title()} ad spend", 1.0, 300.0,
-                float(ms.ad_spend_k), 1.0, key="own_ad")
+    with st.sidebar.expander("📢 Ad Spend ($K/week)", expanded=True):
+        own_ad = st.sidebar.slider(
+            f"{product.title()} ad spend", 1.0, 300.0,
+            float(ms.ad_spend_k), 1.0, key="own_ad")
         comp1_ad = st.sidebar.slider(
             f"{c1_name} ad spend", 1.0, 300.0,
             float(ms.comp1_ad_k), 1.0, key="c1ad")
@@ -175,36 +324,27 @@ def render_sidebar(ms: MarketState, role: str) -> MarketState:
             f"{c2_name} ad spend", 1.0, 300.0,
             float(ms.comp2_ad_k), 1.0, key="c2ad")
 
-    # ── Wholesale prices (all three visible, own wc is primary for manufacturer) ──
     with st.sidebar.expander("🏭 Wholesale Costs ($/unit)", expanded=True):
-        if role == "manufacturer":
-            own_wc = st.sidebar.slider(
-                f"Your {product.title()} wholesale price",
-                0.20, 5.00, float(ms.wholesale_cost), 0.05, key="own_wc")
-        else:
-            own_wc = st.sidebar.slider(
-                f"{product.title()} wholesale cost",
-                0.20, 5.00, float(ms.wholesale_cost), 0.05, key="own_wc")
+        own_wc = st.sidebar.slider(
+            f"{product.title()} wholesale", 0.20, 5.00,
+            float(ms.wholesale_cost), 0.05, key="own_wc")
         comp1_wc = st.sidebar.slider(
-            f"{c1_name} wholesale cost", 0.20, 5.00,
+            f"{c1_name} wholesale", 0.20, 5.00,
             float(ms.comp1_wholesale), 0.05, key="c1wc")
         comp2_wc = st.sidebar.slider(
-            f"{c2_name} wholesale cost", 0.20, 5.00,
+            f"{c2_name} wholesale", 0.20, 5.00,
             float(ms.comp2_wholesale), 0.05, key="c2wc")
 
-    # Scenario label
     scenario = st.sidebar.text_input("Scenario label", "My Scenario", key="scenario")
 
-    # Build updated MarketState
-    import dataclasses
     updated = dataclasses.replace(
         ms,
-        comp1_price   = comp1_price,
-        comp2_price   = comp2_price,
-        ad_spend_k    = own_ad,
-        comp1_ad_k    = comp1_ad,
-        comp2_ad_k    = comp2_ad,
-        wholesale_cost= own_wc,
+        comp1_price    = comp1_price,
+        comp2_price    = comp2_price,
+        ad_spend_k     = own_ad,
+        comp1_ad_k     = comp1_ad,
+        comp2_ad_k     = comp2_ad,
+        wholesale_cost = own_wc,
         comp1_wholesale= comp1_wc,
         comp2_wholesale= comp2_wc,
     )
@@ -212,52 +352,50 @@ def render_sidebar(ms: MarketState, role: str) -> MarketState:
 
 
 # ---------------------------------------------------------------------------
-# Primary decision slider (main page, highlighted)
+# Primary decision slider
 # ---------------------------------------------------------------------------
 def render_choice_slider(ms: MarketState, role: str):
-    """
-    Render the student's primary decision slider prominently.
-    Returns (updated_ms, choice_value).
-    """
-    import dataclasses
     product = ms.product
-    color   = PRODUCT_COLOR[product]
-    d       = PRODUCT_DEFAULTS[product]
 
     st.markdown('<div class="choice-box">', unsafe_allow_html=True)
 
     if role == "price_setter":
-        st.markdown(f"<h3>🏷️ Set Your Retail Price ($/unit)</h3>", unsafe_allow_html=True)
-        lo, hi, step = 0.50, 8.00, 0.01
-        val = st.slider("Retail price", lo, hi, float(ms.own_price), step,
+        st.markdown("<h3>🏷️ Set Your Retail Price ($/unit)</h3>",
+                    unsafe_allow_html=True)
+        val = st.slider("Retail price", 0.50, 8.00, float(ms.own_price), 0.01,
                         key="main_choice",
-                        help="This is your primary decision. Drag to explore profit.")
-        st.caption(f"Selected: **${val:.2f}/unit** &nbsp;|&nbsp; "
-                   f"Wholesale cost: **${ms.wholesale_cost:.2f}/unit** &nbsp;|&nbsp; "
-                   f"Contribution margin: **${val - ms.wholesale_cost:.2f}/unit**")
+                        help="Primary decision. The profit curve peaks at an interior point — find it.")
+        st.caption(
+            f"Selected: **${val:.2f}/unit** · "
+            f"Wholesale cost: **${ms.wholesale_cost:.2f}** · "
+            f"Contribution margin: **${val - ms.wholesale_cost:.2f}/unit**"
+        )
         updated = dataclasses.replace(ms, own_price=val)
 
     elif role == "ad_manager":
-        st.markdown(f"<h3>📢 Set Your Ad Spend ($K/week)</h3>", unsafe_allow_html=True)
-        lo, hi, step = 1.0, 300.0, 1.0
-        val = st.slider("Ad spend ($K/week)", lo, hi, float(ms.ad_spend_k), step,
+        st.markdown("<h3>📢 Set Your Ad Spend ($K/week)</h3>",
+                    unsafe_allow_html=True)
+        val = st.slider("Ad spend ($K/week)", 1.0, 300.0, float(ms.ad_spend_k), 1.0,
                         key="main_choice",
-                        help="Higher ad spend boosts demand but costs money. Find the sweet spot.")
-        st.caption(f"Selected: **${val:.0f}K/week** &nbsp;|&nbsp; "
-                   f"Annual ad budget: **${val*52:.0f}K**")
+                        help="More ads boost demand but costs rise linearly — find the profit peak.")
+        st.caption(
+            f"Selected: **${val:.0f}K/week** · "
+            f"Annual budget: **${val*52:.0f}K**"
+        )
         updated = dataclasses.replace(ms, ad_spend_k=val)
 
     else:  # manufacturer
-        st.markdown(f"<h3>🏭 Set Your Wholesale Price ($/unit)</h3>", unsafe_allow_html=True)
-        lo, hi, step = 0.20, 5.00, 0.05
-        val = st.slider("Wholesale price to retailer", lo, hi,
-                        float(ms.wholesale_cost), step,
-                        key="main_choice",
-                        help="Higher wholesale price earns more per unit but reduces retailer supply.")
+        st.markdown("<h3>🏭 Set Your Wholesale Price ($/unit)</h3>",
+                    unsafe_allow_html=True)
+        val = st.slider("Wholesale price to retailer", 0.20, 5.00,
+                        float(ms.wholesale_cost), 0.05, key="main_choice",
+                        help="Higher wholesale earns more margin per unit but shrinks retailer supply.")
         unit_cost = val * 0.40
-        st.caption(f"Selected: **${val:.2f}/unit** &nbsp;|&nbsp; "
-                   f"Your unit cost (est.): **${unit_cost:.2f}** &nbsp;|&nbsp; "
-                   f"Your unit margin: **${val - unit_cost:.2f}**")
+        st.caption(
+            f"Selected: **${val:.2f}/unit** · "
+            f"Your estimated unit cost: **${unit_cost:.2f}** · "
+            f"Your margin: **${val - unit_cost:.2f}/unit**"
+        )
         updated = dataclasses.replace(ms, wholesale_cost=val)
 
     st.markdown('</div>', unsafe_allow_html=True)
@@ -265,18 +403,18 @@ def render_choice_slider(ms: MarketState, role: str):
 
 
 # ---------------------------------------------------------------------------
-# Metric row
+# Metrics row
 # ---------------------------------------------------------------------------
 def render_metrics(eq: EquilibriumResult, fin: Financials,
                    ms: MarketState, role: str) -> None:
     section("📈 Equilibrium & Financial Results")
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     profitable = eq.quantity_eq >= fin.break_even_units
-    bep_str = (f"{fin.break_even_units:,.0f}" if fin.break_even_units != float("inf") else "∞")
-
+    bep_str = (f"{fin.break_even_units:,.0f}"
+               if fin.break_even_units != float("inf") else "∞")
     with c1: metric_card("Eq. Price",    f"${eq.price_eq:.3f}", "market-clearing")
-    with c2: metric_card("Eq. Quantity", f"{eq.quantity_eq:,.0f}", "units/week")
-    with c3: metric_card("Revenue",      fmtk(fin.revenue), "weekly")
+    with c2: metric_card("Units Sold",   f"{fin.q_sold:,.0f}",  "min(Qd, Qs)/week")
+    with c3: metric_card("Revenue",      fmtk(fin.revenue),      "weekly")
     with c4: metric_card("Gross Profit", fmtk(fin.gross_profit),
                          f"{fin.gross_margin_pct:.1f}% margin")
     with c5: metric_card("Net Profit",   fmtk(fin.net_profit),
@@ -285,15 +423,12 @@ def render_metrics(eq: EquilibriumResult, fin: Financials,
     with c6: metric_card("Break-even",   f"{bep_str} u/wk",
                          "✅ Profitable" if profitable else "❌ Below BEP",
                          profit=profitable)
-
-    # Manufacturer gets extra row
     if role == "manufacturer":
         ca, cb = st.columns(2)
         with ca:
-            metric_card("Manufacturer Revenue", fmtk(fin.manufacturer_revenue),
-                        "wholesale × qty")
+            metric_card("Mfr Revenue", fmtk(fin.manufacturer_revenue), "WC × Q_sold")
         with cb:
-            metric_card("Manufacturer Profit", fmtk(fin.manufacturer_profit),
+            metric_card("Mfr Profit",  fmtk(fin.manufacturer_profit),
                         "after mfr costs", profit=(fin.manufacturer_profit >= 0))
 
 
@@ -305,90 +440,90 @@ def render_eq_alert(ms: MarketState, eq: EquilibriumResult, role: str) -> None:
         gap = ms.own_price - eq.price_eq
         if abs(gap) < 0.03:
             st.success(f"✅ Your price **${ms.own_price:.2f}** is at equilibrium "
-                       f"(**${eq.price_eq:.3f}**). Market clears cleanly.")
+                       f"(**${eq.price_eq:.3f}**). The market clears with no excess.")
         elif gap > 0:
             st.warning(f"📉 Your price **${ms.own_price:.2f}** is **${gap:.2f} above** "
-                       f"equilibrium (${eq.price_eq:.3f}). Expect excess supply — "
-                       f"unsold inventory builds up.")
+                       f"equilibrium (${eq.price_eq:.3f}). Excess supply — "
+                       f"unsold inventory builds. Check if this is still profitable.")
         else:
             st.warning(f"📈 Your price **${ms.own_price:.2f}** is **${abs(gap):.2f} below** "
                        f"equilibrium (${eq.price_eq:.3f}). Excess demand — "
-                       f"you're underpricing, leaving margin on the table.")
+                       f"you're selling out but leaving margin on the table.")
     elif role == "ad_manager":
         st.info(f"📢 At **${ms.ad_spend_k:.0f}K/week** ad spend, equilibrium clears at "
-                f"**${eq.price_eq:.3f}/unit** with **{eq.quantity_eq:,.0f} units/week**. "
-                f"Watch the profit curve for the optimal ad budget.")
+                f"**${eq.price_eq:.3f}/unit** with **{fin_q(eq):,.0f} units/week**. "
+                f"Slide the ad budget and watch the profit curve for the sweet spot.")
     else:
-        st.info(f"🏭 Wholesale price **${ms.wholesale_cost:.2f}/unit** → retailer equilibrium "
-                f"at **${eq.price_eq:.3f}** with **{eq.quantity_eq:,.0f} units/week**. "
-                f"Higher wholesale boosts your margin but shrinks supply volume.")
+        st.info(f"🏭 Wholesale **${ms.wholesale_cost:.2f}/unit** → retailer equilibrium "
+                f"**${eq.price_eq:.3f}** with **{fin_q(eq):,.0f} units/week**. "
+                f"Higher WC boosts your margin but shrinks Qs — find the interior peak.")
+
+def fin_q(eq: EquilibriumResult) -> float:
+    return min(eq.quantity_demanded, eq.quantity_supplied)
 
 
 # ---------------------------------------------------------------------------
 # Charts
 # ---------------------------------------------------------------------------
+_CHART_BG = "#FAFCFF"
+_CHART_M  = dict(l=0, r=0, t=50, b=0)
+
 def render_charts(ms: MarketState, eq: EquilibriumResult,
                   fin: Financials, role: str) -> None:
     section("📊 Market Charts")
-    product = ms.product
-    color   = PRODUCT_COLOR[product]
+    color = PRODUCT_COLOR[ms.product]
 
-    # Choose tabs based on role
     if role == "price_setter":
         tabs = st.tabs(["Supply & Demand", "Profit vs Price",
                         "Revenue Breakdown", "Competitor Impact"])
+        with tabs[0]: _chart_sd(ms, eq, color)
+        with tabs[1]: _chart_price_profit(ms, eq, color)
+        with tabs[2]: _chart_pie(fin, color)
+        with tabs[3]: _chart_competitor_impact(ms, eq, color)
+
     elif role == "ad_manager":
         tabs = st.tabs(["Profit vs Ad Spend", "Supply & Demand",
                         "Revenue Breakdown", "Ad Effectiveness"])
+        with tabs[0]: _chart_ad_profit(ms, eq, color)
+        with tabs[1]: _chart_sd(ms, eq, color)
+        with tabs[2]: _chart_pie(fin, color)
+        with tabs[3]: _chart_ad_effectiveness(ms, eq, color)
+
     else:
         tabs = st.tabs(["Profit vs Wholesale", "Supply & Demand",
-                        "Revenue Breakdown", "Mfr vs Retailer Profit"])
+                        "Revenue Breakdown", "Mfr vs Retailer"])
+        with tabs[0]: _chart_wc_profit(ms, eq, color)
+        with tabs[1]: _chart_sd(ms, eq, color)
+        with tabs[2]: _chart_pie(fin, color)
+        with tabs[3]: _chart_mfr_retailer(ms, eq, color)
 
-    # ── Tab A ──
-    with tabs[0]:
-        if role == "price_setter":
-            _chart_sd(ms, eq, color)
-        elif role == "ad_manager":
-            _chart_ad_profit(ms, eq, color)
-        else:
-            _chart_wc_profit(ms, eq, color)
 
-    # ── Tab B ──
-    with tabs[1]:
-        if role == "price_setter":
-            _chart_price_profit(ms, eq, color)
-        else:
-            _chart_sd(ms, eq, color)
-
-    # ── Tab C — Revenue breakdown ──
-    with tabs[2]:
-        _chart_pie(fin, eq, color)
-
-    # ── Tab D ──
-    with tabs[3]:
-        if role == "price_setter":
-            _chart_competitor_impact(ms, eq, color)
-        elif role == "ad_manager":
-            _chart_ad_effectiveness(ms, eq, color)
-        else:
-            _chart_mfr_retailer(ms, eq, color)
+def _layout(title: str, xaxis: str, yaxis: str,
+            secondary: str | None = None) -> dict:
+    d = dict(title=title, height=420,
+             plot_bgcolor=_CHART_BG, paper_bgcolor=_CHART_BG,
+             margin=_CHART_M,
+             legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0))
+    return d
 
 
 def _chart_sd(ms, eq, color):
-    rows = sweep_price(ms, p_min=0.50, p_max=7.00, steps=80)
-    px   = [r["price"] for r in rows]
-    qd   = [r["qd"]    for r in rows]
-    qs   = [r["qs"]    for r in rows]
-    fig  = make_subplots(specs=[[{"secondary_y": True}]])
-    fig.add_trace(go.Scatter(x=px, y=qd, name="Demand",
+    rows  = sweep_price(ms, 0.50, 7.00, 100)
+    px    = [r["price"]   for r in rows]
+    qd    = [r["qd"]      for r in rows]
+    qs    = [r["qs"]      for r in rows]
+    ex    = [r["excess"]  for r in rows]
+    fill_d = _hex_to_rgba(color, 0.10)
+
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    fig.add_trace(go.Scatter(x=px, y=qd, name="Demand (Qd)",
                              line=dict(color=color, width=2.5),
-                             fill="tozeroy", fillcolor=f"{color}12"),
+                             fill="tozeroy", fillcolor=fill_d),
                   secondary_y=False)
-    fig.add_trace(go.Scatter(x=px, y=qs, name="Supply",
+    fig.add_trace(go.Scatter(x=px, y=qs, name="Supply (Qs)",
                              line=dict(color="#2ECC71", width=2.5, dash="dash"),
-                             fill="tozeroy", fillcolor="#2ECC7112"),
+                             fill="tozeroy", fillcolor="rgba(46,204,113,0.08)"),
                   secondary_y=False)
-    ex = [r["excess"] for r in rows]
     fig.add_trace(go.Scatter(x=px, y=ex, name="Excess Demand",
                              line=dict(color="#E67E22", width=1.5, dash="dot")),
                   secondary_y=True)
@@ -400,100 +535,97 @@ def _chart_sd(ms, eq, color):
         fig.add_vline(x=ms.own_price, line_color="#8E44AD", line_dash="dot",
                       line_width=1.5, annotation_text="Your price",
                       annotation_position="top left")
-    fig.update_layout(title="Supply & Demand Curves", height=420,
-                      legend=dict(orientation="h", y=1.08),
-                      plot_bgcolor="#FAFCFF", paper_bgcolor="#FAFCFF",
-                      margin=dict(l=0, r=0, t=50, b=0))
+    fig.update_layout(**_layout("Supply & Demand Curves",
+                                "Price ($/unit)", "Units/week"))
     fig.update_xaxes(title_text="Price ($/unit)")
     fig.update_yaxes(title_text="Units/week", secondary_y=False)
-    fig.update_yaxes(title_text="Excess demand", secondary_y=True)
+    fig.update_yaxes(title_text="Excess demand (units)", secondary_y=True)
     st.plotly_chart(fig, use_container_width=True)
 
 
 def _chart_price_profit(ms, eq, color):
-    rows = sweep_price(ms, p_min=0.50, p_max=7.00, steps=80)
-    px   = [r["price"]  for r in rows]
-    pf   = [r["profit"] for r in rows]
-    # Find local maximum
+    rows  = sweep_price(ms, 0.50, 7.00, 120)
+    px    = [r["price"]  for r in rows]
+    pf    = [r["profit"] for r in rows]
     best_i = max(range(len(pf)), key=lambda i: pf[i])
-    opt_p  = px[best_i]
-    opt_pf = pf[best_i]
+    opt_p, opt_pf = px[best_i], pf[best_i]
+    fill = _hex_to_rgba(color, 0.08)
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=px, y=pf, name="Net Profit",
                              line=dict(color=color, width=2.5),
-                             fill="tozeroy", fillcolor=f"{color}10"))
+                             fill="tozeroy", fillcolor=fill))
     fig.add_hline(y=0, line_color="#C0392B", line_dash="dash", line_width=1)
     fig.add_vline(x=eq.price_eq, line_color="#27AE60", line_dash="dash",
                   line_width=1.5,
-                  annotation_text=f"Eq ${eq.price_eq:.2f}")
+                  annotation_text=f"Eq ${eq.price_eq:.2f}",
+                  annotation_position="top right")
     fig.add_vline(x=ms.own_price, line_color="#8E44AD", line_dash="dot",
-                  line_width=1.5, annotation_text="Your price")
+                  line_width=1.5, annotation_text="Your price",
+                  annotation_position="top left")
     fig.add_trace(go.Scatter(x=[opt_p], y=[opt_pf],
                              mode="markers+text",
-                             marker=dict(size=12, color="#E74C3C"),
-                             text=[f"Max π\n${opt_p:.2f}"],
-                             textposition="top center",
-                             name="Profit max"))
-    fig.update_layout(title="Net Profit vs. Retail Price",
-                      height=420, plot_bgcolor="#FAFCFF", paper_bgcolor="#FAFCFF",
-                      margin=dict(l=0, r=0, t=50, b=0))
+                             marker=dict(size=12, color="#E74C3C",
+                                         symbol="star"),
+                             text=[f"  Max π ${opt_p:.2f}"],
+                             textposition="middle right",
+                             name=f"Profit max"))
+    fig.update_layout(**_layout("Net Profit vs. Retail Price",
+                                "Retail price ($/unit)", "Net Profit ($)"))
     fig.update_xaxes(title_text="Retail price ($/unit)")
     fig.update_yaxes(title_text="Net Profit ($)")
     st.plotly_chart(fig, use_container_width=True)
-
-    if abs(ms.own_price - opt_p) > 0.10:
-        st.info(f"💡 Profit is maximized at approximately **${opt_p:.2f}/unit** "
+    if abs(ms.own_price - opt_p) > 0.12:
+        st.info(f"💡 Profit peaks at **${opt_p:.2f}/unit** "
                 f"(Net profit: **{fmtk(opt_pf)}**). "
                 f"Your current price is **${ms.own_price:.2f}**.")
 
 
 def _chart_ad_profit(ms, eq, color):
-    rows = sweep_ad(ms, ad_min=1.0, ad_max=300.0, steps=80)
-    ax   = [r["ad"]     for r in rows]
-    pf   = [r["profit"] for r in rows]
+    rows  = sweep_ad(ms, 1.0, 300.0, 100)
+    ax    = [r["ad"]     for r in rows]
+    pf    = [r["profit"] for r in rows]
     best_i = max(range(len(pf)), key=lambda i: pf[i])
-    opt_ad = ax[best_i]
-    opt_pf = pf[best_i]
+    opt_ad, opt_pf = ax[best_i], pf[best_i]
+    fill = _hex_to_rgba(color, 0.08)
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=ax, y=pf, name="Net Profit",
                              line=dict(color=color, width=2.5),
-                             fill="tozeroy", fillcolor=f"{color}10"))
+                             fill="tozeroy", fillcolor=fill))
     fig.add_hline(y=0, line_color="#C0392B", line_dash="dash")
     fig.add_vline(x=ms.ad_spend_k, line_color="#8E44AD", line_dash="dot",
                   annotation_text="Current spend")
     fig.add_trace(go.Scatter(x=[opt_ad], y=[opt_pf],
                              mode="markers+text",
-                             marker=dict(size=12, color="#E74C3C"),
-                             text=[f"Max π\n${opt_ad:.0f}K"],
-                             textposition="top center", name="Profit max"))
-    fig.update_layout(title="Net Profit vs. Ad Spend",
-                      height=420, plot_bgcolor="#FAFCFF", paper_bgcolor="#FAFCFF",
-                      margin=dict(l=0, r=0, t=50, b=0))
+                             marker=dict(size=12, color="#E74C3C", symbol="star"),
+                             text=[f"  Max π ${opt_ad:.0f}K"],
+                             textposition="middle right",
+                             name="Profit max"))
+    fig.update_layout(**_layout("Net Profit vs. Ad Spend",
+                                "Ad spend ($K/week)", "Net Profit ($)"))
     fig.update_xaxes(title_text="Ad spend ($K/week)")
     fig.update_yaxes(title_text="Net Profit ($)")
     st.plotly_chart(fig, use_container_width=True)
-
     if abs(ms.ad_spend_k - opt_ad) > 5:
-        st.info(f"💡 Profit is maximized at approximately **${opt_ad:.0f}K/week** "
+        st.info(f"💡 Profit peaks at **${opt_ad:.0f}K/week** "
                 f"(Net profit: **{fmtk(opt_pf)}**). "
                 f"Your current spend is **${ms.ad_spend_k:.0f}K/week**.")
 
 
 def _chart_wc_profit(ms, eq, color):
-    rows = sweep_wholesale(ms, wc_min=0.20, wc_max=4.50, steps=80)
-    wx   = [r["wc"]         for r in rows]
-    rpf  = [r["profit"]     for r in rows]
-    mpf  = [r["mfr_profit"] for r in rows]
-    best_i  = max(range(len(mpf)), key=lambda i: mpf[i])
-    opt_wc  = wx[best_i]
-    opt_mpf = mpf[best_i]
+    rows   = sweep_wholesale(ms, 0.20, 4.50, 100)
+    wx     = [r["wc"]         for r in rows]
+    rpf    = [r["profit"]     for r in rows]
+    mpf    = [r["mfr_profit"] for r in rows]
+    best_i = max(range(len(mpf)), key=lambda i: mpf[i])
+    opt_wc, opt_mpf = wx[best_i], mpf[best_i]
+    fill = _hex_to_rgba(color, 0.08)
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=wx, y=mpf, name="Manufacturer Profit",
                              line=dict(color=color, width=2.5),
-                             fill="tozeroy", fillcolor=f"{color}10"))
+                             fill="tozeroy", fillcolor=fill))
     fig.add_trace(go.Scatter(x=wx, y=rpf, name="Retailer Net Profit",
                              line=dict(color="#2ECC71", width=1.8, dash="dash")))
     fig.add_hline(y=0, line_color="#C0392B", line_dash="dash")
@@ -501,47 +633,43 @@ def _chart_wc_profit(ms, eq, color):
                   annotation_text="Current WC")
     fig.add_trace(go.Scatter(x=[opt_wc], y=[opt_mpf],
                              mode="markers+text",
-                             marker=dict(size=12, color="#E74C3C"),
-                             text=[f"Max π\n${opt_wc:.2f}"],
-                             textposition="top center", name="Mfr max"))
-    fig.update_layout(title="Manufacturer Profit vs. Wholesale Price",
-                      height=420, plot_bgcolor="#FAFCFF", paper_bgcolor="#FAFCFF",
-                      margin=dict(l=0, r=0, t=50, b=0))
+                             marker=dict(size=12, color="#E74C3C", symbol="star"),
+                             text=[f"  Max π ${opt_wc:.2f}"],
+                             textposition="middle right",
+                             name="Mfr max"))
+    fig.update_layout(**_layout("Manufacturer Profit vs. Wholesale Price",
+                                "Wholesale price ($/unit)", "Profit ($)"))
     fig.update_xaxes(title_text="Wholesale price ($/unit)")
     fig.update_yaxes(title_text="Profit ($)")
     st.plotly_chart(fig, use_container_width=True)
-
-    if abs(ms.wholesale_cost - opt_wc) > 0.10:
-        st.info(f"💡 Your manufacturer profit peaks at **${opt_wc:.2f}/unit** wholesale "
+    if abs(ms.wholesale_cost - opt_wc) > 0.12:
+        st.info(f"💡 Manufacturer profit peaks at **${opt_wc:.2f}/unit** "
                 f"(Profit: **{fmtk(opt_mpf)}**). "
                 f"Your current price is **${ms.wholesale_cost:.2f}**.")
 
 
-def _chart_pie(fin, eq, color):
+def _chart_pie(fin, color):
     labels = ["COGS", "Ad Spend", "Transport", "Fixed OH", "Tax"]
     vals   = [fin.cogs, fin.ad_expense, fin.transport_expense,
               fin.fixed_overhead, fin.tax_amount]
-    np_val = fin.net_profit
-    if np_val > 0:
+    colors = [color, "#0D7377", "#2980B9", "#8E44AD", "#E67E22"]
+    if fin.net_profit > 0:
         labels.append("Net Profit")
-        vals.append(np_val)
-        colors = [color, "#0D7377", "#2980B9", "#8E44AD", "#E67E22", "#1A7A45"]
-    else:
-        colors = [color, "#0D7377", "#2980B9", "#8E44AD", "#E67E22"]
+        vals.append(fin.net_profit)
+        colors.append("#1A7A45")
     fig = go.Figure(go.Pie(labels=labels, values=vals, hole=0.42,
                            marker_colors=colors, textinfo="label+percent"))
     fig.update_layout(title=f"Revenue Breakdown  (Total: {fmtk(fin.revenue)})",
-                      height=420, plot_bgcolor="#FAFCFF", paper_bgcolor="#FAFCFF",
-                      margin=dict(l=0, r=0, t=50, b=0))
+                      height=420, plot_bgcolor=_CHART_BG, paper_bgcolor=_CHART_BG,
+                      margin=_CHART_M)
     st.plotly_chart(fig, use_container_width=True)
 
 
 def _chart_competitor_impact(ms, eq, color):
-    """Show how changing competitor prices affects own equilibrium price & profit."""
-    import dataclasses, numpy as np
-    c1_range  = [round(0.50 + i * 0.15, 2) for i in range(50)]
-    own_prices = []
-    profits    = []
+    d = PRODUCT_DEFAULTS[ms.product]
+    c1_name = d["comp1"].title()
+    c1_range = [round(0.50 + i * 0.14, 2) for i in range(55)]
+    own_prices, profits = [], []
     for cp in c1_range:
         ms2  = dataclasses.replace(ms, comp1_price=cp)
         eq2  = find_equilibrium(ms2)
@@ -557,22 +685,20 @@ def _chart_competitor_impact(ms, eq, color):
                              line=dict(color="#E74C3C", width=2, dash="dash")),
                   secondary_y=True)
     fig.add_vline(x=ms.comp1_price, line_color="#8E44AD", line_dash="dot",
-                  annotation_text=f"Current {PRODUCT_DEFAULTS[ms.product]['comp1'].title()} price")
-    fig.update_layout(title=f"Impact of {PRODUCT_DEFAULTS[ms.product]['comp1'].title()} Price on Your Market",
-                      height=420, plot_bgcolor="#FAFCFF", paper_bgcolor="#FAFCFF",
-                      margin=dict(l=0, r=0, t=50, b=0))
-    fig.update_xaxes(title_text=f"{PRODUCT_DEFAULTS[ms.product]['comp1'].title()} price ($/unit)")
+                  annotation_text=f"Current {c1_name} price")
+    fig.update_layout(**_layout(f"Impact of {c1_name} Price on Your Market",
+                                f"{c1_name} price ($/unit)", "Your Eq. Price"))
+    fig.update_xaxes(title_text=f"{c1_name} price ($/unit)")
     fig.update_yaxes(title_text="Your Eq. Price ($/unit)", secondary_y=False)
     fig.update_yaxes(title_text="Your Net Profit ($)", secondary_y=True)
     st.plotly_chart(fig, use_container_width=True)
 
 
 def _chart_ad_effectiveness(ms, eq, color):
-    """Return on ad spend: profit per $K of ad spend."""
-    rows = sweep_ad(ms, ad_min=1.0, ad_max=300.0, steps=80)
-    ax   = [r["ad"]                          for r in rows]
+    rows = sweep_ad(ms, 1.0, 300.0, 100)
+    ax   = [r["ad"]    for r in rows]
     roi  = [r["profit"] / (r["ad"] * 1000) if r["ad"] > 0 else 0 for r in rows]
-    qty  = [r["qty"]                         for r in rows]
+    qty  = [r["qty"]   for r in rows]
 
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     fig.add_trace(go.Scatter(x=ax, y=roi, name="Profit per $ Ad Spend",
@@ -583,9 +709,8 @@ def _chart_ad_effectiveness(ms, eq, color):
                   secondary_y=True)
     fig.add_vline(x=ms.ad_spend_k, line_color="#8E44AD", line_dash="dot",
                   annotation_text="Current")
-    fig.update_layout(title="Ad Effectiveness: Return per Dollar Spent",
-                      height=420, plot_bgcolor="#FAFCFF", paper_bgcolor="#FAFCFF",
-                      margin=dict(l=0, r=0, t=50, b=0))
+    fig.update_layout(**_layout("Ad Effectiveness: Return per Dollar Spent",
+                                "Ad spend ($K/week)", "Profit / Ad dollar"))
     fig.update_xaxes(title_text="Ad spend ($K/week)")
     fig.update_yaxes(title_text="Profit / Ad dollar", secondary_y=False)
     fig.update_yaxes(title_text="Units/week", secondary_y=True)
@@ -593,23 +718,24 @@ def _chart_ad_effectiveness(ms, eq, color):
 
 
 def _chart_mfr_retailer(ms, eq, color):
-    """Stacked comparison: manufacturer vs retailer profit as wholesale changes."""
-    rows = sweep_wholesale(ms, wc_min=0.20, wc_max=4.50, steps=80)
+    rows = sweep_wholesale(ms, 0.20, 4.50, 100)
     wx   = [r["wc"]         for r in rows]
     rpf  = [r["profit"]     for r in rows]
     mpf  = [r["mfr_profit"] for r in rows]
-    tot  = [r + m           for r, m in zip(rpf, mpf)]
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=wx, y=mpf, name="Manufacturer Profit",
-                             stackgroup="one", line=dict(color=color)))
+                             stackgroup="one",
+                             line=dict(color=color),
+                             fillcolor=_hex_to_rgba(color, 0.5)))
     fig.add_trace(go.Scatter(x=wx, y=rpf, name="Retailer Profit",
-                             stackgroup="one", line=dict(color="#2ECC71")))
+                             stackgroup="one",
+                             line=dict(color="#2ECC71"),
+                             fillcolor="rgba(46,204,113,0.5)"))
     fig.add_vline(x=ms.wholesale_cost, line_color="#8E44AD", line_dash="dot",
                   annotation_text="Current WC")
-    fig.update_layout(title="Channel Profit Split: Manufacturer vs Retailer",
-                      height=420, plot_bgcolor="#FAFCFF", paper_bgcolor="#FAFCFF",
-                      margin=dict(l=0, r=0, t=50, b=0))
+    fig.update_layout(**_layout("Channel Profit Split: Manufacturer vs Retailer",
+                                "Wholesale price ($/unit)", "Profit ($)"))
     fig.update_xaxes(title_text="Wholesale price ($/unit)")
     fig.update_yaxes(title_text="Profit ($)")
     st.plotly_chart(fig, use_container_width=True)
@@ -621,30 +747,25 @@ def _chart_mfr_retailer(ms, eq, color):
 def render_sensitivity_table(ms: MarketState, eq: EquilibriumResult,
                              fin: Financials, role: str) -> None:
     import pandas as pd
-    section("🔍 Sensitivity Table")
-
-    rows = sweep_price(ms, p_min=0.50, p_max=7.00, steps=25)
+    section("🔍 Price Sensitivity Table")
+    rows = sweep_price(ms, 0.50, 7.00, 25)
     data = []
     for r in rows:
-        rev  = r["price"] * r["qs"]
-        cogs = ms.wholesale_cost * r["qs"]
-        opex = (ms.ad_spend_k + ms.transport_cost_k + ms.fixed_overhead_k) * 1000
-        pf   = (rev - cogs - opex) * (1 - ms.tax_rate_pct / 100)
-        near = "✅" if abs(r["price"] - eq.price_eq) < 0.14 else ""
+        near = "✅" if abs(r["price"] - eq.price_eq) < 0.15 else ""
         data.append({
-            "Price": f"${r['price']:.2f}",
-            "Qd":    f"{r['qd']:,.0f}",
-            "Qs":    f"{r['qs']:,.0f}",
-            "Excess": f"{r['excess']:+,.0f}",
-            "Revenue": fmtk(rev),
-            "Net Profit": fmtk(pf),
-            "≈ Eq?": near,
+            "Price ($/u)": f"${r['price']:.2f}",
+            "Qd":          f"{r['qd']:,.0f}",
+            "Qs":          f"{r['qs']:,.0f}",
+            "Q_sold":      f"{r['q_sold']:,.0f}",
+            "Excess":      f"{r['excess']:+,.0f}",
+            "Net Profit":  fmtk(r["profit"]),
+            "≈ Eq?":       near,
         })
     st.dataframe(pd.DataFrame(data), use_container_width=True, hide_index=True)
 
 
 # ---------------------------------------------------------------------------
-# Export buttons
+# Export
 # ---------------------------------------------------------------------------
 def render_export(ms: MarketState, eq: EquilibriumResult,
                   fin: Financials, scenario: str) -> None:

@@ -4,6 +4,27 @@ core/model.py — Multi-product beverage retail market simulator.
 Products : Coffee | Soda | Beer
 Roles    : Price Setter | Ad Spend Manager | Wholesale Price Setter (Manufacturer)
 
+Noise model
+-----------
+Each call to demand() / supply() includes idiosyncratic shocks drawn from a
+multivariate normal distribution.  The three shock components are:
+
+  ε_own   ~ N(0, σ_own²)      — own-market shock (weather event, supply disruption…)
+  ε_comp  ~ N(0, σ_comp²)     — common beverage-sector shock (shared with competitors)
+  ε_cross ~ N(0, σ_cross²)    — cross-market shock (correlated across products)
+
+The shocks are correlated:
+  Cor(ε_demand_own, ε_supply_own)  = ρ_ds  (demand & supply of same product move together)
+  Cor(ε_own, ε_comp)               = ρ_oc  (own-market linked to common sector shock)
+  Cor(ε_comp_i, ε_comp_j)         = ρ_cc  (competitors' shocks are correlated)
+
+Competitor choice variables (price, ad, wholesale) also receive correlated noise:
+  Pc_obs  = Pc_true  * exp(η_price)
+  Ac_obs  = Ac_true  * exp(η_ad)
+  WCc_obs = WCc_true * exp(η_wc)
+where the η's are correlated with ε_own so that market-wide shocks affect
+everyone simultaneously (e.g. a sugar-price spike raises all wholesale costs).
+
 Demand functional form
 ----------------------
   ln Qd = a0
@@ -20,6 +41,7 @@ Demand functional form
     + a16*Age + a17*Age^2             shopper age: quadratic
     + a18*Temp + a19*Temp^2           temperature: quadratic
     + product_mod                     product-specific modifier
+    + ε_demand                        idiosyncratic + correlated shock
 
 Supply functional form
 ----------------------
@@ -33,27 +55,17 @@ Supply functional form
     + b10*CapUtil                     capacity: linear
     + b11*ln(Energy)                  energy cost: log-linear
     + b14*ln(StoreCount)              store count: log-linear
+    + ε_supply                        idiosyncratic + correlated shock
 
-Profit & interior maxima
-------------------------
-  Q_sold = min(Qd(P), Qs(P))  — market-clearing quantity at student's price
-  Profit = (P - WC)*Q_sold - AdOpEx - TransOpEx - FixedOH  (pre-tax EBIT * (1-tau))
-
-  This creates genuine interior maxima:
-    Price setter   : (P-WC)*min(Qd(P),Qs(P)) is concave around equilibrium
-    Ad manager     : Qd rises with Adv but a_adv2*Adv^2 makes returns diminishing;
-                     profit peaks where marginal revenue from ads = marginal ad cost
-    Manufacturer   : (WC-UnitCost)*Qs(WC) has interior max because higher WC
-                     reduces Qs via the b2/b_wc2 terms
-
-Calibrated intercepts (bisection-verified, targets in docstring):
+Calibrated intercepts:
   Coffee: Peq~$3.50, Qty~80K,  profit@eq~+$89K
   Soda:   Peq~$1.80, Qty~150K, profit@eq~+$55K
   Beer:   Peq~$3.00, Qty~60K,  profit@eq~+$26K
 """
 from __future__ import annotations
 import math
-from dataclasses import dataclass
+import random
+from dataclasses import dataclass, field
 from typing import Literal
 
 Product = Literal["coffee", "soda", "beer"]
@@ -122,7 +134,97 @@ FIXED_DEMOGRAPHICS: dict = dict(
 
 
 # ---------------------------------------------------------------------------
-# 1. MarketState
+# Noise / shock system
+# ---------------------------------------------------------------------------
+# Shock standard deviations (in log-quantity units, ~% of quantity)
+_SIGMA_OWN_D   = 0.08   # idiosyncratic demand shock  (~8% std)
+_SIGMA_OWN_S   = 0.06   # idiosyncratic supply shock  (~6% std)
+_SIGMA_SECTOR  = 0.05   # common sector shock (shared across products)
+_SIGMA_COMP_P  = 0.04   # competitor price noise       (~4% std in log)
+_SIGMA_COMP_A  = 0.06   # competitor ad-spend noise
+_SIGMA_COMP_WC = 0.04   # competitor wholesale noise
+
+# Correlation parameters
+_RHO_DS    = 0.40   # demand & supply of same product (positive common shock)
+_RHO_SECTOR= 0.55   # own shock correlated with sector shock
+_RHO_CC    = 0.60   # competitor shocks correlated with each other
+_RHO_CROSS = 0.30   # own demand shock correlated with competitor choice noise
+
+
+def _cholesky2(rho: float) -> tuple[float, float]:
+    """Lower-triangular Cholesky factors for 2×2 corr matrix [[1,rho],[rho,1]]."""
+    return 1.0, math.sqrt(max(1.0 - rho**2, 1e-12))
+
+
+def draw_shocks(seed: int | None = None) -> dict[str, float]:
+    """
+    Draw a full set of correlated shocks for one simulation period.
+
+    Returns a dict with keys:
+      eps_d     — demand shock (ln-scale, added to ln Qd)
+      eps_s     — supply shock (ln-scale, added to ln Qs)
+      eta_c1p   — competitor-1 price shock multiplier (multiplicative on Pc1)
+      eta_c2p   — competitor-2 price shock multiplier
+      eta_c1a   — competitor-1 ad-spend shock multiplier
+      eta_c2a   — competitor-2 ad-spend shock multiplier
+      eta_c1wc  — competitor-1 wholesale shock multiplier
+      eta_c2wc  — competitor-2 wholesale shock multiplier
+
+    Correlation structure (Gaussian copula):
+      1. Draw z0 ~ N(0,1): the common sector shock
+      2. eps_d = rho_sector*z0 + sqrt(1-rho^2)*z_d  (own demand)
+      3. eps_s = rho_ds*(eps_d/sigma_d)*sigma_s + sqrt(1-rho_ds^2)*z_s
+              i.e. supply shock is partly driven by demand shock (common event)
+      4. Competitor price/ad/wc shocks are correlated with eps_d (cross-market)
+         and with each other (common sector)
+    """
+    rng = random.Random(seed)
+    def z(): return rng.gauss(0, 1)
+
+    # Common sector shock
+    z0 = z()
+
+    # Own demand: correlated with sector
+    L11, L12 = _cholesky2(_RHO_SECTOR)
+    raw_d = L11 * z0 + L12 * z()
+    eps_d = raw_d * _SIGMA_OWN_D
+
+    # Own supply: correlated with own demand (same-market events)
+    L11s, L12s = _cholesky2(_RHO_DS)
+    raw_s = L11s * (raw_d) + L12s * z()   # share the raw_d signal
+    eps_s = raw_s * _SIGMA_OWN_S
+
+    # Competitor shocks — correlated with sector AND own demand
+    # Each competitor gets its own idiosyncratic component too
+    def comp_shock(sigma: float) -> tuple[float, float]:
+        """Returns (comp1_shock, comp2_shock) correlated with each other and with z0."""
+        zc = z()  # common competitor component (already correlated sector via z0)
+        # comp1 = rho_cross*raw_d + rho_cc*zc + idiosyncratic
+        L1 = _RHO_CROSS
+        L2 = math.sqrt(max(_RHO_CC**2 - L1**2, 0))
+        L3 = math.sqrt(max(1 - L1**2 - L2**2, 1e-12))
+        raw_c1 = L1*raw_d + L2*zc + L3*z()
+        raw_c2 = L1*raw_d + L2*zc + L3*z()
+        return raw_c1 * sigma, raw_c2 * sigma
+
+    dp1, dp2 = comp_shock(_SIGMA_COMP_P)
+    da1, da2 = comp_shock(_SIGMA_COMP_A)
+    dw1, dw2 = comp_shock(_SIGMA_COMP_WC)
+
+    return dict(
+        eps_d=eps_d,
+        eps_s=eps_s,
+        eta_c1p=math.exp(dp1),
+        eta_c2p=math.exp(dp2),
+        eta_c1a=math.exp(da1),
+        eta_c2a=math.exp(da2),
+        eta_c1wc=math.exp(dw1),
+        eta_c2wc=math.exp(dw2),
+    )
+
+
+# ---------------------------------------------------------------------------
+# MarketState
 # ---------------------------------------------------------------------------
 @dataclass
 class MarketState:
@@ -166,10 +268,15 @@ class MarketState:
     stim_mod: float = 0.0
     alc_mod: float = 0.0
 
-    @property
-    def __dataclass_fields__(self):
-        import dataclasses
-        return {f.name: f for f in dataclasses.fields(self)}
+    # Active shocks (set by draw_shocks, default = no noise)
+    eps_d: float = 0.0
+    eps_s: float = 0.0
+    eta_c1p: float = 1.0
+    eta_c2p: float = 1.0
+    eta_c1a: float = 1.0
+    eta_c2a: float = 1.0
+    eta_c1wc: float = 1.0
+    eta_c2wc: float = 1.0
 
 
 def make_market_state(product: str, overrides: dict | None = None) -> MarketState:
@@ -203,30 +310,31 @@ def make_market_state(product: str, overrides: dict | None = None) -> MarketStat
     return ms
 
 
+def apply_shocks(ms: MarketState, shocks: dict[str, float]) -> MarketState:
+    """Return a copy of ms with shock fields set from draw_shocks() output."""
+    import dataclasses
+    return dataclasses.replace(ms, **{k: shocks[k] for k in shocks})
+
+
 # ---------------------------------------------------------------------------
-# 2. Demand
+# Demand  (shocks enter as eps_d in ln-space; competitor obs = true * eta)
 # ---------------------------------------------------------------------------
 def demand(price: float, ms: MarketState) -> float:
     prod = ms.product
     a0   = _DEMAND_INTERCEPTS[prod]
 
-    # Own price: log-linear + quadratic (quadratic creates interior profit max)
     a1   = {"coffee": -1.40, "soda": -1.60, "beer": -1.50}[prod]
     a_pp = {"coffee": -0.04, "soda": -0.10, "beer": -0.06}[prod]
 
-    # Cross-price elasticities (two competitors)
     a2 = {"coffee": 0.30, "soda": 0.60, "beer": 0.45}[prod]
     a3 = {"coffee": 0.25, "soda": 0.40, "beer": 0.35}[prod]
 
-    # Own advertising: log + quadratic diminishing returns
     a4     = {"coffee": 0.30, "soda": 0.25, "beer": 0.28}[prod]
     a_adv2 = {"coffee": -8e-5, "soda": -1e-4, "beer": -9e-5}[prod]
 
-    # Competitor advertising spillover (negative)
     a5 = {"coffee": -0.10, "soda": -0.15, "beer": -0.12}[prod]
     a6 = {"coffee": -0.08, "soda": -0.12, "beer": -0.10}[prod]
 
-    # Demographics
     a7  =  0.50;  a8  = -0.030
     a9  =  0.18;  a10 = -0.012
     a11 =  0.025; a12 = -0.0008; a13 = 4e-6
@@ -238,11 +346,12 @@ def demand(price: float, ms: MarketState) -> float:
     product_mod = ms.health_mod + ms.stim_mod + ms.alc_mod
 
     P   = max(price, 0.01)
-    Pc1 = max(ms.comp1_price, 0.01)
-    Pc2 = max(ms.comp2_price, 0.01)
+    # Observed competitor prices = stated value * shock multiplier
+    Pc1 = max(ms.comp1_price * ms.eta_c1p, 0.01)
+    Pc2 = max(ms.comp2_price * ms.eta_c2p, 0.01)
     Adv = max(ms.ad_spend_k, 0.01)
-    Ac1 = max(ms.comp1_ad_k, 0.01)
-    Ac2 = max(ms.comp2_ad_k, 0.01)
+    Ac1 = max(ms.comp1_ad_k * ms.eta_c1a, 0.01)
+    Ac2 = max(ms.comp2_ad_k * ms.eta_c2a, 0.01)
     Inc = max(ms.local_income_k, 0.01)
     CS  = ms.consumer_sat; T  = ms.time_months
     S   = max(ms.season_index, 0.01)
@@ -266,16 +375,17 @@ def demand(price: float, ms: MarketState) -> float:
         + a16  * Age + a17 * Age**2
         + a18  * Tmp + a19 * Tmp**2
         + product_mod
+        + ms.eps_d          # idiosyncratic + correlated demand shock
     )
     return math.exp(ln_qd)
 
 
 # ---------------------------------------------------------------------------
-# 3. Supply
+# Supply  (eps_s enters ln-space; comp wholesale obs = true * eta)
 # ---------------------------------------------------------------------------
 def supply(price: float, ms: MarketState) -> float:
-    prod = ms.product
-    b0   = _SUPPLY_INTERCEPTS[prod]
+    prod  = ms.product
+    b0    = _SUPPLY_INTERCEPTS[prod]
 
     b1    = {"coffee": 1.10, "soda": 1.20, "beer": 1.05}[prod]
     b2    = {"coffee": -1.30, "soda": -1.40, "beer": -1.20}[prod]
@@ -304,6 +414,7 @@ def supply(price: float, ms: MarketState) -> float:
         + b10 * ms.capacity_util_pct
         + b11 * math.log(EC)
         + b14 * math.log(SC)
+        + ms.eps_s          # idiosyncratic + correlated supply shock
     )
     return math.exp(ln_qs)
 
@@ -313,7 +424,7 @@ def excess_demand(price: float, ms: MarketState) -> float:
 
 
 # ---------------------------------------------------------------------------
-# 4. Equilibrium solver
+# Equilibrium solver  (bisection + Newton-Raphson)
 # ---------------------------------------------------------------------------
 @dataclass
 class EquilibriumResult:
@@ -331,7 +442,7 @@ def find_equilibrium(ms: MarketState,
                      p_low: float = 0.05, p_high: float = 50.0,
                      bisection_iters: int = 80, nr_iters: int = 30,
                      nr_tol: float = 1e-10) -> EquilibriumResult:
-    """Bisection (80 iter) + Newton-Raphson refinement."""
+    """Bisection (80 iter) → Newton-Raphson refinement."""
     ed_low  = excess_demand(p_low,  ms)
     ed_high = excess_demand(p_high, ms)
     if ed_low < 0:   p_low  = 1e-4;  ed_low  = excess_demand(p_low,  ms)
@@ -371,7 +482,7 @@ def find_equilibrium(ms: MarketState,
 
 
 # ---------------------------------------------------------------------------
-# 5. Financials  (Q_sold = min(Qd, Qs) — key for interior profit maximum)
+# Financials  (Q_sold = min(Qd, Qs) — key for interior profit maximum)
 # ---------------------------------------------------------------------------
 @dataclass
 class Financials:
@@ -389,13 +500,12 @@ class Financials:
     net_margin_pct: float
     contribution_margin: float
     break_even_units: float
-    q_sold: float            # min(Qd, Qs) — actual units transacted
+    q_sold: float
     manufacturer_revenue: float = 0.0
     manufacturer_profit: float  = 0.0
 
 
 def compute_financials(eq: EquilibriumResult, ms: MarketState) -> Financials:
-    # Use market-clearing quantity: min(Qd, Qs) at equilibrium
     q_sold = min(eq.quantity_demanded, eq.quantity_supplied)
     p      = eq.price_eq
 
@@ -417,11 +527,10 @@ def compute_financials(eq: EquilibriumResult, ms: MarketState) -> Financials:
     cm  = p - ms.wholesale_cost
     bep = total_opex / cm if cm > 0 else float("inf")
 
-    # Manufacturer perspective (earns WC per unit, bears ~40% unit cost + some fixed)
-    mfr_unit_cost  = ms.wholesale_cost * 0.40
-    mfr_revenue    = ms.wholesale_cost * q_sold
-    mfr_profit     = ((mfr_revenue - mfr_unit_cost * q_sold)
-                      - ad_exp * 0.5 - fixed * 0.5)
+    mfr_unit_cost = ms.wholesale_cost * 0.40
+    mfr_revenue   = ms.wholesale_cost * q_sold
+    mfr_profit    = (mfr_revenue - mfr_unit_cost * q_sold
+                     - ad_exp * 0.5 - fixed * 0.5)
 
     return Financials(
         revenue=revenue, cogs=cogs,
@@ -437,17 +546,8 @@ def compute_financials(eq: EquilibriumResult, ms: MarketState) -> Financials:
 
 
 # ---------------------------------------------------------------------------
-# 6. Sensitivity sweeps
+# Sensitivity sweeps
 # ---------------------------------------------------------------------------
-def _profit_at(p: float, ms: MarketState) -> float:
-    """Net profit using min(Qd,Qs)."""
-    qd   = demand(p, ms)
-    qs   = supply(p, ms)
-    q    = min(qd, qs)
-    opex = (ms.ad_spend_k + ms.transport_cost_k + ms.fixed_overhead_k) * 1000
-    return (p * q - ms.wholesale_cost * q - opex) * (1 - ms.tax_rate_pct / 100)
-
-
 def sweep_price(ms: MarketState, p_min: float = 0.50, p_max: float = 7.00,
                 steps: int = 60) -> list[dict]:
     rows = []
