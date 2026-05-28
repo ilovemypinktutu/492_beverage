@@ -1,5 +1,15 @@
 """
 core/page_runner.py — Single entry point for all 9 role pages.
+
+Layout order (per spec):
+  1. Banner
+  2. Decision slider (choice variable)
+  3. Shock banner (always active)
+  4. Equilibrium alert
+  5. Results table
+  6. Decision history (auto-recorded, downloadable)
+  7. Market Charts (at the bottom)
+  8. Footer
 """
 from __future__ import annotations
 import dataclasses
@@ -15,7 +25,7 @@ from core.ui import (
     render_sidebar_nav, render_sidebar, render_shock_controls,
     render_choice_slider,
     render_eq_alert, render_results_table,
-    render_history, render_charts, render_export,
+    render_history, render_charts,
     _shock_banner,
     PRODUCT_EMOJI, ROLE_LABEL, ROLE_EMOJI,
 )
@@ -29,7 +39,7 @@ _REQUIRED_FIELDS = {
 
 
 def _is_valid_ms(obj, product: str) -> bool:
-    if not isinstance(obj, MarketState):                      return False
+    if not isinstance(obj, MarketState):                       return False
     if getattr(obj, "_version", -1) != _MARKET_STATE_VERSION: return False
     if obj.product != product:                                 return False
     return all(hasattr(obj, f) for f in _REQUIRED_FIELDS)
@@ -61,8 +71,8 @@ def run_page(product: str, role: str) -> None:
     confirmed_role    = st.session_state.get("confirmed_role")
     if confirmed_product != product or confirmed_role != role:
         st.warning(
-            "⚠️ Please go to the **Home / Setup** page, choose your product and role, "
-            "then return here via the sidebar link."
+            "⚠️ Please go to the **Home / Setup** page, choose your product "
+            "and role, then return here via the sidebar link."
         )
         st.page_link("app.py", label="🏠 Go to Home / Setup")
         st.stop()
@@ -73,19 +83,18 @@ def run_page(product: str, role: str) -> None:
     # ── Banner ──
     role_banner(product, role)
 
-    # ── MarketState ──
+    # ── MarketState (stale-object safe) ──
     state_key = f"ms_{product}_{role}_v{_MARKET_STATE_VERSION}"
     ms_base = _get_or_reset_ms(state_key, product)
 
-    # ── Sidebar: fixed market conditions ──
-    ms_after_sidebar, scenario = render_sidebar(ms_base, role)
+    # ── Sidebar: fixed market conditions only (no choice vars, no shocks) ──
+    ms_after_sidebar = render_sidebar(ms_base, role)
 
-    # ── Sidebar: shocks ──
+    # ── Shocks: always on, auto seed ──
     ms_after_shocks, active_shocks = render_shock_controls(ms_after_sidebar)
 
     # ── Main: decision slider + correlated draw ──
     ms_final, choice_val = render_choice_slider(ms_after_shocks, role)
-
     st.session_state[state_key] = ms_final
 
     # ── Shock banner ──
@@ -95,28 +104,23 @@ def run_page(product: str, role: str) -> None:
     eq  = find_equilibrium(ms_final)
     fin = compute_financials(eq, ms_final)
 
-    # ── Alert ──
+    # ── Equilibrium alert ──
     render_eq_alert(ms_final, eq, role)
 
     # ── Results table ──
     render_results_table(eq, fin, ms_final, role, choice_val)
 
-    # ── Charts ──
+    # ── Decision history (auto-recorded, with Excel download) ──
+    render_history(eq, fin, ms_final, role, choice_val, scenario="")
+
+    # ── Market Charts — at the bottom ──
     render_charts(ms_final, eq, fin, role)
-
-    # ── History / recording ──
-    render_history(eq, fin, ms_final, role, choice_val, scenario)
-
-    # ── Export current scenario ──
-    render_export(ms_final, eq, fin, scenario)
 
     # ── Footer ──
     st.markdown("---")
     mode = "Correlated" if not st.session_state.get("experiment_mode") else "Free-play"
     st.markdown(
         f"<small style='color:#999'>{emoji} {product.title()} · "
-        f"{ROLE_EMOJI[role]} {role_lbl} · "
-        f"Mode: {mode} · "
-        f"Shocks: {'active' if active_shocks else 'off'}</small>",
+        f"{ROLE_EMOJI[role]} {role_lbl} · Mode: {mode}</small>",
         unsafe_allow_html=True,
     )

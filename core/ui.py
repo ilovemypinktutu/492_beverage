@@ -151,7 +151,7 @@ def render_sidebar_nav(product: str, role: str) -> None:
 # Sidebar — fixed market conditions (NOT the 9 choice vars, NOT shocks)
 # Tooltips via the `help` parameter explain each variable
 # ---------------------------------------------------------------------------
-def render_sidebar(ms: MarketState, role: str):
+def render_sidebar(ms: MarketState, role: str) -> MarketState:
     """
     Show only the fixed market-condition controls.
     The 9 choice variables (own_price, ad_spend_k, wholesale_cost,
@@ -205,9 +205,9 @@ def render_sidebar(ms: MarketState, role: str):
 
         with st.expander("🏭 Operations", expanded=False):
             cap_util = st.slider(
-                "Capacity utilisation (%)",
+                "Capacity utilization (%)",
                 10.0, 100.0, float(ms.capacity_util_pct), 1.0,
-                help="Percentage of production/distribution capacity currently in use. Higher utilisation increases quantity supplied.")
+                help="Percentage of production/distribution capacity currently in use. Higher utilization increases quantity supplied.")
             energy = st.slider(
                 "Energy cost index",
                 0.5, 3.0, float(ms.energy_cost_idx), 0.05,
@@ -229,8 +229,6 @@ def render_sidebar(ms: MarketState, role: str):
                 -1.0, 1.0, float(ms.health_trend), 0.05,
                 help="Market-level health-consciousness. Positive = health-aware market (hurts soda/beer, slightly helps coffee). Negative = less health-focused.")
 
-        st.markdown("---")
-        scenario = st.text_input("Scenario label", "Scenario 1", key="scenario_label")
 
     return dataclasses.replace(
         ms,
@@ -248,7 +246,7 @@ def render_sidebar(ms: MarketState, role: str):
         regulatory_burden = reg_burden,
         store_count       = float(store_cnt),
         health_trend      = health,
-    ), scenario
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -394,7 +392,7 @@ def render_choice_slider(ms: MarketState, role: str):
         val = st.slider("Ad spend ($K/week)", 1.0, 300.0, float(ms.ad_spend_k), 1.0,
                         key="main_choice",
                         help="More ads boost demand but returns diminish. Find the profit peak.")
-        st.caption(f"Selected: **${val:.0f}K/week** · Annual budget: **${val*52:.0f}K**")
+        st.caption(f"Selected: **${val:.0f}K/week**")
     else:
         st.markdown("<h3>🏭 Set Your Wholesale Price ($/unit)</h3>",
                     unsafe_allow_html=True)
@@ -515,16 +513,18 @@ def render_history(eq: EquilibriumResult, fin: Financials,
         new_row["Mfr Revenue ($)"] = round(fin.manufacturer_revenue, 2)
         new_row["Mfr Profit ($)"]  = round(fin.manufacturer_profit, 2)
 
-    col_add, col_clear = st.columns([3, 1])
-    with col_add:
-        if st.button("➕ Record this result", use_container_width=True,
-                     help="Append the current result to your history table."):
-            st.session_state[hist_key].append(new_row)
-    with col_clear:
-        if st.button("🗑️ Clear history", use_container_width=True):
-            st.session_state[hist_key] = []
-
+    # Auto-record every result — deduplicate on choice value
     history = st.session_state[hist_key]
+    if not history or history[-1].get(choice_col) != choice_disp:
+        history.append(new_row)
+        # Advance shock seed so next slider move gets a fresh draw
+        st.session_state['shock_seed_auto'] = st.session_state.get('shock_seed_auto', 42) + 1
+
+    if st.button("🗑️ Clear history", use_container_width=True,
+                 help="Remove all recorded results from this session."):
+        st.session_state[hist_key] = []
+        history = []
+
     if history:
         df = pd.DataFrame(history)
         st.dataframe(df, use_container_width=True, hide_index=True)
@@ -542,7 +542,7 @@ def render_history(eq: EquilibriumResult, fin: Financials,
             use_container_width=True,
         )
     else:
-        st.caption("No results recorded yet. Click **➕ Record this result** after each decision.")
+        st.caption("No results recorded yet. Move the slider to generate your first result.")
 
     # Correlated mode: expose a seed control so students can see different draws
     if not st.session_state.get("experiment_mode", False):
@@ -553,7 +553,7 @@ def render_history(eq: EquilibriumResult, fin: Financials,
             value=st.session_state.get("corr_seed", 0), step=1,
             key="corr_seed_input",
             help="Each value gives a different correlated draw of competitor variables. "
-                 "Changing this simulates a different realisation of market conditions."
+                 "Changing this simulates a different realization of market conditions."
         )
         st.session_state["corr_seed"] = new_seed
 
@@ -671,34 +671,20 @@ def _shock_banner(shocks: dict | None, ms: MarketState) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Shock controls (sidebar)
+# Shock controls — always ON, seed drawn from session state
+# No sidebar UI; shocks are applied automatically every run.
 # ---------------------------------------------------------------------------
 def render_shock_controls(ms: MarketState):
-    with st.sidebar:
-        st.markdown("---")
-        st.markdown("#### 🎲 Idiosyncratic Shocks")
-        st.caption(
-            "Add random demand/supply disturbances (weather, supply disruptions, etc.). "
-            "Shocks are correlated across products and between demand and supply."
-        )
-        use_shocks = st.toggle("Enable random shocks", value=False, key="use_shocks")
-        if not use_shocks:
-            return ms, None
-
-        seed = st.number_input(
-            "Shock seed (change to draw new shocks)",
-            min_value=0, max_value=9999,
-            value=42, step=1, key="shock_seed",
-        )
-        shocks = draw_shocks(seed=int(seed))
-        ms_with = apply_shocks(ms, shocks)
-
-        col1, col2 = st.columns(2)
-        col1.metric("Demand shock", f"{(math.exp(shocks['eps_d'])-1)*100:+.1f}%")
-        col2.metric("Supply shock", f"{(math.exp(shocks['eps_s'])-1)*100:+.1f}%")
-        return ms_with, shocks
-
-    return ms, None
+    """
+    Shocks are always enabled (default ON per spec).
+    The seed increments automatically each time the student moves their
+    slider (tracked via a counter in session_state), giving a fresh draw
+    each decision without requiring any user action.
+    """
+    seed = st.session_state.get("shock_seed_auto", 42)
+    shocks = draw_shocks(seed=int(seed))
+    ms_with = apply_shocks(ms, shocks)
+    return ms_with, shocks
 
 
 # ---------------------------------------------------------------------------
@@ -730,22 +716,4 @@ def render_eq_alert(ms: MarketState, eq: EquilibriumResult, role: str) -> None:
         )
 
 
-# ---------------------------------------------------------------------------
-# Export (raw scenario data)
-# ---------------------------------------------------------------------------
-def render_export(ms: MarketState, eq: EquilibriumResult,
-                  fin: Financials, scenario: str) -> None:
-    from core.export import export_xlsx, export_csv
-    section("⬇️ Export Current Scenario")
-    c1, c2 = st.columns(2)
-    with c1:
-        xlsx = export_xlsx(ms, eq, fin, scenario)
-        st.download_button("📥 Excel (.xlsx)", data=xlsx,
-                           file_name=f"{ms.product}_{scenario.replace(' ','_')}.xlsx",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                           use_container_width=True)
-    with c2:
-        csv = export_csv(ms, eq, fin, scenario)
-        st.download_button("📥 CSV (.csv)", data=csv,
-                           file_name=f"{ms.product}_{scenario.replace(' ','_')}.csv",
-                           mime="text/csv", use_container_width=True)
+# render_export removed per spec (no "Export Current Scenario" section)
