@@ -130,6 +130,9 @@ FIXED_DEMOGRAPHICS: dict = dict(
     temperature_f=72.0,
     consumer_sat=7.0,
     time_months=0.0,
+    health_trend=0.0,
+    input_scarcity=0.0,
+    regulatory_burden=0.0,
 )
 
 
@@ -228,7 +231,7 @@ def draw_shocks(seed: int | None = None) -> dict[str, float]:
 # ---------------------------------------------------------------------------
 # Bump this whenever fields are added/removed so page_runner can detect
 # stale session_state objects and reset them safely.
-_MARKET_STATE_VERSION = 3
+_MARKET_STATE_VERSION = 4
 
 
 @dataclass
@@ -268,6 +271,9 @@ class MarketState:
     temperature_f: float = 72.0
     consumer_sat: float = 7.0
     time_months: float = 0.0
+    health_trend: float = 0.0
+    input_scarcity: float = 0.0
+    regulatory_burden: float = 0.0
 
     # Product modifiers
     health_mod: float = 0.0
@@ -358,6 +364,7 @@ def demand(price: float, ms: MarketState) -> float:
     a18 =  0.006; a19 = -3.5e-5
 
     product_mod = ms.health_mod + ms.stim_mod + ms.alc_mod
+    a_ht = {'coffee': -0.05, 'soda': -0.20, 'beer': -0.08}[prod]  # health trend effect
 
     P   = max(price, 0.01)
     # Observed competitor prices = stated value * shock multiplier
@@ -389,6 +396,7 @@ def demand(price: float, ms: MarketState) -> float:
         + a16  * Age + a17 * Age**2
         + a18  * Tmp + a19 * Tmp**2
         + product_mod
+        + a_ht * ms.health_trend
         + ms.eps_d          # idiosyncratic + correlated demand shock
     )
     return math.exp(ln_qd)
@@ -409,6 +417,8 @@ def supply(price: float, ms: MarketState) -> float:
     b5  = -0.50;  b6  = -0.30; b7 = 0.10
     b8  =  0.14;  b9  = -0.008
     b10 =  0.005; b11 = -0.35; b14 = 0.20
+    b12 = -0.40   # input scarcity (linear)
+    b13 = -0.25   # regulatory burden (linear)
 
     P   = max(price, 0.01)
     WC  = max(ms.wholesale_cost, 0.01)
@@ -427,6 +437,8 @@ def supply(price: float, ms: MarketState) -> float:
         + b8  * ES + b9 * ES**2
         + b10 * ms.capacity_util_pct
         + b11 * math.log(EC)
+        + b12 * ms.input_scarcity
+        + b13 * ms.regulatory_burden
         + b14 * math.log(SC)
         + ms.eps_s          # idiosyncratic + correlated supply shock
     )

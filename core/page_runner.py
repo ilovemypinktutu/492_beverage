@@ -24,6 +24,7 @@ _REQUIRED_FIELDS = {
     "eps_d", "eps_s", "eta_c1p", "eta_c2p",
     "eta_c1a", "eta_c2a", "eta_c1wc", "eta_c2wc",
     "comp1_ad_k", "comp2_ad_k", "_version",
+    "input_scarcity", "regulatory_burden", "health_trend",
 }
 
 
