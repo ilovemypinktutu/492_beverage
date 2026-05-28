@@ -164,12 +164,15 @@ def export_csv(ms: MarketState, eq: EquilibriumResult,
         w.writerow([k, v])
     w.writerow([])
     w.writerow(["=== FINANCIALS ==="])
-    for k in fin.__dataclass_fields__:
-        w.writerow([k, round(getattr(fin, k), 4)])
+    for f in __import__("dataclasses").fields(fin):
+        try:
+            w.writerow([f.name, round(getattr(fin, f.name), 4)])
+        except (TypeError, ValueError):
+            w.writerow([f.name, getattr(fin, f.name)])
     w.writerow([])
     w.writerow(["=== MARKET STATE ==="])
-    for k in ms.__dataclass_fields__:
-        w.writerow([k, getattr(ms, k)])
+    for f in __import__("dataclasses").fields(ms):
+        w.writerow([f.name, getattr(ms, f.name)])
     w.writerow([])
     w.writerow(["=== PRICE SENSITIVITY ==="])
     w.writerow(["price", "qd", "qs", "excess", "profit"])

@@ -226,9 +226,15 @@ def draw_shocks(seed: int | None = None) -> dict[str, float]:
 # ---------------------------------------------------------------------------
 # MarketState
 # ---------------------------------------------------------------------------
+# Bump this whenever fields are added/removed so page_runner can detect
+# stale session_state objects and reset them safely.
+_MARKET_STATE_VERSION = 3
+
+
 @dataclass
 class MarketState:
     product: str = "soda"
+    _version: int = _MARKET_STATE_VERSION  # internal sentinel — do not remove
 
     # Student-controlled
     own_price: float = 1.80
@@ -311,9 +317,17 @@ def make_market_state(product: str, overrides: dict | None = None) -> MarketStat
 
 
 def apply_shocks(ms: MarketState, shocks: dict[str, float]) -> MarketState:
-    """Return a copy of ms with shock fields set from draw_shocks() output."""
-    import dataclasses
-    return dataclasses.replace(ms, **{k: shocks[k] for k in shocks})
+    """
+    Return a copy of ms with shock fields applied.
+    Uses copy + setattr rather than dataclasses.replace() so it is immune
+    to field-schema mismatches from stale session-state objects.
+    """
+    import copy
+    ms2 = copy.copy(ms)
+    for k, v in shocks.items():
+        if hasattr(ms2, k):        # only set fields that actually exist
+            object.__setattr__(ms2, k, v)
+    return ms2
 
 
 # ---------------------------------------------------------------------------
