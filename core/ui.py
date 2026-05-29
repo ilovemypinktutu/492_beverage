@@ -125,21 +125,21 @@ def role_banner(product: str, role: str) -> None:
 # ---------------------------------------------------------------------------
 def render_sidebar_nav(product: str, role: str) -> None:
     PAGE_MAP = {
-        ("coffee","price_setter"): ("pages/1_☕_Coffee_Price_Setter.py",  "☕ Coffee — Price Setter"),
-        ("coffee","ad_manager"):   ("pages/2_☕_Coffee_Ad_Manager.py",    "☕ Coffee — Ad Manager"),
-        ("coffee","manufacturer"): ("pages/3_☕_Coffee_Manufacturer.py",  "☕ Coffee — Manufacturer"),
-        ("soda",  "price_setter"): ("pages/4_🥤_Soda_Price_Setter.py",   "🥤 Soda — Price Setter"),
-        ("soda",  "ad_manager"):   ("pages/5_🥤_Soda_Ad_Manager.py",     "🥤 Soda — Ad Manager"),
-        ("soda",  "manufacturer"): ("pages/6_🥤_Soda_Manufacturer.py",   "🥤 Soda — Manufacturer"),
-        ("beer",  "price_setter"): ("pages/7_🍺_Beer_Price_Setter.py",   "🍺 Beer — Price Setter"),
-        ("beer",  "ad_manager"):   ("pages/8_🍺_Beer_Ad_Manager.py",     "🍺 Beer — Ad Manager"),
-        ("beer",  "manufacturer"): ("pages/9_🍺_Beer_Manufacturer.py",   "🍺 Beer — Manufacturer"),
+        ("coffee","price_setter"): ("pages/1_Coffee_Price_Setter.py",  "☕ Coffee — Price Setter"),
+        ("coffee","ad_manager"):   ("pages/2_Coffee_Ad_Manager.py",    "☕ Coffee — Ad Manager"),
+        ("coffee","manufacturer"): ("pages/3_Coffee_Manufacturer.py",  "☕ Coffee — Manufacturer"),
+        ("soda",  "price_setter"): ("pages/4_Soda_Price_Setter.py",   "🥤 Soda — Price Setter"),
+        ("soda",  "ad_manager"):   ("pages/5_Soda_Ad_Manager.py",     "🥤 Soda — Ad Manager"),
+        ("soda",  "manufacturer"): ("pages/6_Soda_Manufacturer.py",   "🥤 Soda — Manufacturer"),
+        ("beer",  "price_setter"): ("pages/7_Beer_Price_Setter.py",   "🍺 Beer — Price Setter"),
+        ("beer",  "ad_manager"):   ("pages/8_Beer_Ad_Manager.py",     "🍺 Beer — Ad Manager"),
+        ("beer",  "manufacturer"): ("pages/9_Beer_Manufacturer.py",   "🍺 Beer — Manufacturer"),
     }
     with st.sidebar:
         st.markdown("### 🧃 Navigation")
         st.page_link("app.py",               label="🏠 Home / Setup")
-        st.page_link("pages/00_ℹ️_How_It_Works.py", label="ℹ️ How It Works")
-        st.page_link("pages/0_📖_Glossary.py", label="📖 Glossary")
+        st.page_link("pages/00_How_It_Works.py", label="ℹ️ How It Works")
+        st.page_link("pages/0_Glossary.py", label="📖 Glossary")
         key = (product, role)
         if key in PAGE_MAP:
             path, label = PAGE_MAP[key]
@@ -251,121 +251,125 @@ def render_sidebar(ms: MarketState, role: str) -> MarketState:
 
 
 # ---------------------------------------------------------------------------
-# Correlated draw: when student sets their choice variable,
-# draw all OTHER choice variables from a conditional distribution.
+# Correlated mode — structured, role-specific draws (per spec)
+# ---------------------------------------------------------------------------
+# All variables are drawn via a log-normal helper:
+#   drawn = base * exp(beta * dev + sigma_iid * z)
+# where dev = (student_choice - product_default) / product_default
+# and z ~ N(0,1) is pure iid noise.
+#
+# Structural rules (per spec):
+#
+# MANUFACTURER (sets wholesale price WC)
+#   • Own retail price  ↑ with WC (beta=0.85) — retailer passes cost through
+#   • Competitor prices NOT correlated (beta=0) — per spec simplification
+#   • Supply shock eps_s ↓ with WC (structural beta_s = -0.20 * dev)
+#
+# AD MANAGER (sets ad spend)
+#   • Own retail price  ↑ with Ad (beta=0.60) — premium positioning signal
+#   • Competitor prices NOT correlated (beta=0) — per spec simplification
+#   • Demand shock eps_d ↑ with Ad (structural component = +0.18 * dev)
+#
+# PRICE SETTER (sets retail price)
+#   • Competitor prices ↑ with own price (beta=0.70) — strategic complementarity
+#   • Own wholesale cost co-moves (beta=0.60) — common cost shock
+#   • Demand shock eps_d ↑ with price (structural component = +0.15 * dev)
+#
+# Pure iid shocks (sigma=0.06) are added on top of structural components in
+# all roles. These are the ONLY disturbances present in experiment mode.
 # ---------------------------------------------------------------------------
 def _draw_correlated_others(ms: MarketState, role: str,
-                             choice_val: float, seed: int) -> MarketState:
+                             choice_val: float, seed: int) -> tuple:
     """
-    Given the student's choice value, draw correlated values for all other
-    choice variables using the market shock system + mean-regression.
-
-    Economic logic:
-      - We condition on the student's choice implying a latent market state.
-      - Other prices/spends respond with positive correlation (common cost shocks)
-        and some idiosyncratic noise.
-      - Competitor prices are mean-reverting toward their defaults with added noise.
+    Draw correlated market variables and correlated shocks.
+    Returns (updated_ms, shocks_dict).
     """
-    d = PRODUCT_DEFAULTS[ms.product]
+    d   = PRODUCT_DEFAULTS[ms.product]
     rng = random.Random(seed)
 
-    def noisy(base: float, corr: float, own_signal: float,
-               own_base: float, sigma: float) -> float:
-        """
-        Draw a correlated value.
-        base      = default/mean value
-        corr      = correlation with own_signal
-        own_signal= normalized deviation of student's choice from default
-        sigma     = noise std (in log-space)
-        """
-        # Normalize own deviation
-        own_dev = (own_signal - own_base) / (own_base + 1e-9)
-        # Correlated component + idiosyncratic noise
-        z = rng.gauss(0, 1)
-        log_factor = corr * own_dev * sigma + math.sqrt(max(1 - corr**2, 0)) * z * sigma
-        return max(base * math.exp(log_factor), 0.01)
+    def draw(base: float, beta: float, dev: float, sigma_idio: float) -> float:
+        z = rng.gauss(0.0, 1.0)
+        return max(base * math.exp(beta * dev + sigma_idio * z), 0.01)
 
-    # Mean defaults for choice variables
-    own_price_default = d["own_price"]
-    own_ad_default    = d["ad_default"]
-    own_wc_default    = d["wc_default"]
-    c1p_default = d["comp1_price"]
-    c2p_default = d["comp2_price"]
-    c1a_default = d["comp1_ad"]
-    c2a_default = d["comp2_ad"]
-    c1_name = d["comp1"]; c2_name = d["comp2"]
-    c1wc_default = PRODUCT_DEFAULTS[c1_name]["wc_default"]
-    c2wc_default = PRODUCT_DEFAULTS[c2_name]["wc_default"]
+    # Pure iid shocks — always drawn, uncorrelated with choice variable
+    sigma_iid = 0.06
+    eps_d_iid = rng.gauss(0.0, 1.0) * sigma_iid
+    eps_s_iid = rng.gauss(0.0, 1.0) * sigma_iid
 
-    sigma_price = 0.18   # ~18% price noise (raised so movement is visible)
-    sigma_ad    = 0.20   # ~20% ad noise
-    sigma_wc    = 0.15   # ~15% wholesale noise (raised so movement is visible)
+    # Default levels
+    own_price_def = d["own_price"];   own_ad_def = d["ad_default"]
+    own_wc_def    = d["wc_default"]
+    c1_name = d["comp1"];  c2_name = d["comp2"]
+    c1p_def  = d["comp1_price"];  c2p_def  = d["comp2_price"]
+    c1a_def  = d["comp1_ad"];     c2a_def  = d["comp2_ad"]
+    c1wc_def = PRODUCT_DEFAULTS[c1_name]["wc_default"]
+    c2wc_def = PRODUCT_DEFAULTS[c2_name]["wc_default"]
+    bg = 0.08  # background noise std for structurally unlinked variables
 
-    if role == "price_setter":
-        own_sig = choice_val
-        own_def = own_price_default
-        corr_prices = 0.70   # competitors respond to your price (strategic complementarity)
-        corr_ad     = 0.40
-        corr_wc     = 0.60   # wholesale co-moves with market price (common cost shock)
-        c1p = noisy(c1p_default, corr_prices, own_sig, own_def, sigma_price)
-        c2p = noisy(c2p_default, corr_prices, own_sig, own_def, sigma_price)
-        c1a = noisy(c1a_default, corr_ad, own_sig, own_def, sigma_ad)
-        c2a = noisy(c2a_default, corr_ad, own_sig, own_def, sigma_ad)
-        own_ad = noisy(own_ad_default, 0.35, own_sig, own_def, sigma_ad)
-        c1wc = noisy(c1wc_default, corr_wc, own_sig, own_def, sigma_wc)
-        c2wc = noisy(c2wc_default, corr_wc, own_sig, own_def, sigma_wc)
-        own_wc = noisy(own_wc_default, corr_wc, own_sig, own_def, sigma_wc)
+    if role == "manufacturer":
+        dev = (choice_val - own_wc_def) / (own_wc_def + 1e-9)
+        own_price = draw(own_price_def, 0.85,  dev, 0.08)  # retailer passes WC through
+        c1p  = draw(c1p_def,  0.00, dev, bg)   # no structural link
+        c2p  = draw(c2p_def,  0.00, dev, bg)
+        c1a  = draw(c1a_def,  0.00, dev, bg)
+        c2a  = draw(c2a_def,  0.00, dev, bg)
+        c1wc = draw(c1wc_def, 0.00, dev, bg)
+        c2wc = draw(c2wc_def, 0.00, dev, bg)
+        own_ad = draw(own_ad_def, 0.00, dev, bg)
+        # Supply shock: higher WC → retailer more reluctant → negative supply shock
+        eps_s = -0.20 * dev + eps_s_iid
+        eps_d =  0.00       + eps_d_iid
 
     elif role == "ad_manager":
-        own_sig = choice_val
-        own_def = own_ad_default
-        corr_ad     = 0.55   # competitor ad responds to your ad (arms race)
-        corr_prices = 0.20
-        corr_wc     = 0.15
-        c1a = noisy(c1a_default, corr_ad, own_sig, own_def, sigma_ad)
-        c2a = noisy(c2a_default, corr_ad, own_sig, own_def, sigma_ad)
-        c1p = noisy(c1p_default, corr_prices, own_sig, own_def, sigma_price)
-        c2p = noisy(c2p_default, corr_prices, own_sig, own_def, sigma_price)
-        own_price = noisy(own_price_default, 0.0, 0, 0, sigma_price * 0.4)
-        c1wc = noisy(c1wc_default, corr_wc, own_sig, own_def, sigma_wc)
-        c2wc = noisy(c2wc_default, corr_wc, own_sig, own_def, sigma_wc)
-        own_wc = noisy(own_wc_default, corr_wc, own_sig, own_def, sigma_wc)
-        own_ad = choice_val  # keep student's choice fixed
-        return dataclasses.replace(ms, own_price=own_price, ad_spend_k=own_ad,
-                                   wholesale_cost=own_wc,
-                                   comp1_price=c1p, comp2_price=c2p,
-                                   comp1_ad_k=c1a, comp2_ad_k=c2a,
-                                   comp1_wholesale=c1wc, comp2_wholesale=c2wc)
+        dev = (choice_val - own_ad_def) / (own_ad_def + 1e-9)
+        own_price = draw(own_price_def, 0.60, dev, 0.08)  # premium positioning
+        c1p  = draw(c1p_def,  0.00, dev, bg)   # no structural link
+        c2p  = draw(c2p_def,  0.00, dev, bg)
+        c1a  = draw(c1a_def,  0.15, dev, bg)   # mild ad arms-race
+        c2a  = draw(c2a_def,  0.15, dev, bg)
+        c1wc = draw(c1wc_def, 0.00, dev, bg)
+        c2wc = draw(c2wc_def, 0.00, dev, bg)
+        own_wc = draw(own_wc_def, 0.00, dev, bg)
+        # Demand shock: higher Ad → positive demand boost beyond model term
+        eps_d =  0.18 * dev + eps_d_iid
+        eps_s =  0.00       + eps_s_iid
+        ms_out = dataclasses.replace(ms,
+            own_price=own_price, ad_spend_k=choice_val, wholesale_cost=own_wc,
+            comp1_price=c1p, comp2_price=c2p,
+            comp1_ad_k=c1a, comp2_ad_k=c2a,
+            comp1_wholesale=c1wc, comp2_wholesale=c2wc,
+            eps_d=eps_d, eps_s=eps_s)
+        return ms_out, {"eps_d": eps_d, "eps_s": eps_s}
 
-    else:  # manufacturer
-        own_sig = choice_val
-        own_def = own_wc_default
-        corr_wc     = 0.60   # wholesale costs correlated (common input costs)
-        corr_prices = 0.35
-        corr_ad     = 0.15
-        c1wc = noisy(c1wc_default, corr_wc, own_sig, own_def, sigma_wc)
-        c2wc = noisy(c2wc_default, corr_wc, own_sig, own_def, sigma_wc)
-        c1p  = noisy(c1p_default, corr_prices, own_sig, own_def, sigma_price)
-        c2p  = noisy(c2p_default, corr_prices, own_sig, own_def, sigma_price)
-        c1a  = noisy(c1a_default, corr_ad, own_sig, own_def, sigma_ad)
-        c2a  = noisy(c2a_default, corr_ad, own_sig, own_def, sigma_ad)
-        own_price = noisy(own_price_default, corr_prices * 0.7, own_sig, own_def, sigma_price)
-        own_ad = noisy(own_ad_default, 0.0, 0, 0, sigma_ad * 0.4)
-        own_wc = choice_val  # keep student's choice fixed
-        return dataclasses.replace(ms, own_price=own_price, ad_spend_k=own_ad,
-                                   wholesale_cost=own_wc,
-                                   comp1_price=c1p, comp2_price=c2p,
-                                   comp1_ad_k=c1a, comp2_ad_k=c2a,
-                                   comp1_wholesale=c1wc, comp2_wholesale=c2wc)
+    else:  # price_setter
+        dev = (choice_val - own_price_def) / (own_price_def + 1e-9)
+        c1p  = draw(c1p_def,  0.70, dev, 0.10)  # strategic complementarity
+        c2p  = draw(c2p_def,  0.70, dev, 0.10)
+        own_wc = draw(own_wc_def, 0.60, dev, 0.08)  # common cost shock
+        c1wc = draw(c1wc_def, 0.15, dev, bg)
+        c2wc = draw(c2wc_def, 0.15, dev, bg)
+        c1a  = draw(c1a_def,  0.10, dev, bg)
+        c2a  = draw(c2a_def,  0.10, dev, bg)
+        own_ad = draw(own_ad_def, 0.10, dev, bg)
+        # Demand shock: higher price signals quality → mild positive demand shock
+        eps_d = 0.15 * dev + eps_d_iid
+        eps_s = 0.00       + eps_s_iid
+        ms_out = dataclasses.replace(ms,
+            own_price=choice_val, ad_spend_k=own_ad, wholesale_cost=own_wc,
+            comp1_price=c1p, comp2_price=c2p,
+            comp1_ad_k=c1a, comp2_ad_k=c2a,
+            comp1_wholesale=c1wc, comp2_wholesale=c2wc,
+            eps_d=eps_d, eps_s=eps_s)
+        return ms_out, {"eps_d": eps_d, "eps_s": eps_s}
 
-    # price_setter path (ad_manager/manufacturer return early above)
-    own_p = choice_val
-    return dataclasses.replace(ms, own_price=own_p, ad_spend_k=own_ad,
-                                wholesale_cost=own_wc,
-                                comp1_price=c1p, comp2_price=c2p,
-                                comp1_ad_k=c1a, comp2_ad_k=c2a,
-                                comp1_wholesale=c1wc, comp2_wholesale=c2wc)
-
+    # manufacturer path (ad_manager and price_setter return early)
+    ms_out = dataclasses.replace(ms,
+        own_price=own_price, ad_spend_k=own_ad, wholesale_cost=choice_val,
+        comp1_price=c1p, comp2_price=c2p,
+        comp1_ad_k=c1a, comp2_ad_k=c2a,
+        comp1_wholesale=c1wc, comp2_wholesale=c2wc,
+        eps_d=eps_d, eps_s=eps_s)
+    return ms_out, {"eps_d": eps_d, "eps_s": eps_s}
 
 # ---------------------------------------------------------------------------
 # Primary decision slider
@@ -403,7 +407,7 @@ def render_choice_slider(ms: MarketState, role: str):
     # Apply correlated draw if in correlated mode
     if not exp_mode:
         seed = st.session_state.get("corr_seed", 0)
-        ms_out = _draw_correlated_others(ms, role, val, seed=seed)
+        ms_out, _corr_shocks = _draw_correlated_others(ms, role, val, seed=seed)
     else:
         # Free-play: patch only the student's choice variable
         if role == "price_setter":
@@ -476,42 +480,47 @@ def render_history(eq: EquilibriumResult, fin: Financials,
     else:
         choice_col = "Wholesale ($/unit)"; choice_disp = round(choice_val, 2)
 
+    # Resolve actual competitor product names for this product
+    d     = PRODUCT_DEFAULTS[ms.product]
+    c1nm  = d["comp1"].title()   # e.g. "Soda" for coffee
+    c2nm  = d["comp2"].title()   # e.g. "Beer" for coffee
+
     new_row = {
         # ── Choice variable ──
-        choice_col:              choice_disp,
+        choice_col:                          choice_disp,
         # ── Financial outcomes ──
-        "Eq. Price ($)":         round(eq.price_eq, 4),
-        "Units Sold":            int(fin.q_sold),
-        "Revenue ($)":           round(fin.revenue, 2),
-        "Variable Cost ($)":     round(fin.cogs, 2),
-        "Gross Profit ($)":      round(fin.gross_profit, 2),
-        "OpEx ($)":              round(fin.total_opex, 2),
-        "Net Profit ($)":        round(fin.net_profit, 2),
-        "Gross Margin (%)":      round(fin.gross_margin_pct, 2),
-        "Net Margin (%)":        round(fin.net_margin_pct, 2),
-        # ── Competitor choice variables (correlated draws) ──
-        "Comp1 Price ($)":       round(ms.comp1_price, 4),
-        "Comp2 Price ($)":       round(ms.comp2_price, 4),
-        "Comp1 Ad ($K/wk)":      round(ms.comp1_ad_k, 2),
-        "Comp2 Ad ($K/wk)":      round(ms.comp2_ad_k, 2),
-        "Comp1 Wholesale ($)":   round(ms.comp1_wholesale, 4),
-        "Comp2 Wholesale ($)":   round(ms.comp2_wholesale, 4),
-        "Own Wholesale ($)":     round(ms.wholesale_cost, 4),
-        "Own Ad ($K/wk)":        round(ms.ad_spend_k, 2),
+        "Eq. Price ($)":                     round(eq.price_eq, 4),
+        "Units Sold":                        int(fin.q_sold),
+        "Revenue ($)":                       round(fin.revenue, 2),
+        "Variable Cost ($)":                 round(fin.cogs, 2),
+        "Gross Profit ($)":                  round(fin.gross_profit, 2),
+        "OpEx ($)":                          round(fin.total_opex, 2),
+        "Net Profit ($)":                    round(fin.net_profit, 2),
+        "Gross Margin (%)":                  round(fin.gross_margin_pct, 2),
+        "Net Margin (%)":                    round(fin.net_margin_pct, 2),
+        # ── Competitor choice variables (actual names, not Comp1/Comp2) ──
+        f"{c1nm} Price ($)":                 round(ms.comp1_price, 4),
+        f"{c2nm} Price ($)":                 round(ms.comp2_price, 4),
+        f"{c1nm} Ad ($K/wk)":               round(ms.comp1_ad_k, 2),
+        f"{c2nm} Ad ($K/wk)":               round(ms.comp2_ad_k, 2),
+        f"{c1nm} Wholesale ($)":             round(ms.comp1_wholesale, 4),
+        f"{c2nm} Wholesale ($)":             round(ms.comp2_wholesale, 4),
+        "Own Wholesale ($)":                 round(ms.wholesale_cost, 4),
+        "Own Ad ($K/wk)":                    round(ms.ad_spend_k, 2),
         # ── Market conditions ──
-        "Local Income ($K/yr)":  round(ms.local_income_k, 1),
-        "Unemployment (%)":      round(ms.unemployment_pct, 1),
-        "Pop Density":           round(ms.pop_density, 0),
-        "Temperature (°F)":      round(ms.temperature_f, 1),
-        "Season Index":          round(ms.season_index, 2),
-        "Consumer Sat":          round(ms.consumer_sat, 1),
-        "Employee Sat":          round(ms.employee_sat, 1),
-        "Health Trend":          round(ms.health_trend, 2),
-        "Input Scarcity":        round(ms.input_scarcity, 2),
-        "Reg. Burden":           round(ms.regulatory_burden, 2),
-        "Energy Cost Idx":       round(ms.energy_cost_idx, 2),
-        "Store Count":           int(ms.store_count),
-        "Cap. Utilization (%)":  round(ms.capacity_util_pct, 1),
+        "Local Income ($K/yr)":              round(ms.local_income_k, 1),
+        "Unemployment (%)":                  round(ms.unemployment_pct, 1),
+        "Pop Density":                       round(ms.pop_density, 0),
+        "Temperature (°F)":                  round(ms.temperature_f, 1),
+        "Season Index":                      round(ms.season_index, 2),
+        "Consumer Sat":                      round(ms.consumer_sat, 1),
+        "Employee Sat":                      round(ms.employee_sat, 1),
+        "Health Trend":                      round(ms.health_trend, 2),
+        "Input Scarcity":                    round(ms.input_scarcity, 2),
+        "Reg. Burden":                       round(ms.regulatory_burden, 2),
+        "Energy Cost Idx":                   round(ms.energy_cost_idx, 2),
+        "Store Count":                       int(ms.store_count),
+        "Cap. Utilization (%)":              round(ms.capacity_util_pct, 1),
     }
     if role == "manufacturer":
         new_row["Mfr Revenue ($)"] = round(fin.manufacturer_revenue, 2)
@@ -519,6 +528,24 @@ def render_history(eq: EquilibriumResult, fin: Financials,
 
     # Auto-record every result — deduplicate on choice value
     history = st.session_state[hist_key]
+
+    # Migrate any stale rows: rename old "COGS ($)" key → "Variable Cost ($)"
+    # and old generic "Comp1"/"Comp2" keys → actual product names.
+    # This handles sessions that were open before the rename.
+    rename_map = {
+        "COGS ($)": "Variable Cost ($)",
+        "Comp1 Price ($)": f"{c1nm} Price ($)",
+        "Comp2 Price ($)": f"{c2nm} Price ($)",
+        "Comp1 Ad ($K/wk)": f"{c1nm} Ad ($K/wk)",
+        "Comp2 Ad ($K/wk)": f"{c2nm} Ad ($K/wk)",
+        "Comp1 Wholesale ($)": f"{c1nm} Wholesale ($)",
+        "Comp2 Wholesale ($)": f"{c2nm} Wholesale ($)",
+    }
+    for old_row in history:
+        for old_key, new_key in rename_map.items():
+            if old_key in old_row and new_key not in old_row:
+                old_row[new_key] = old_row.pop(old_key)
+
     if not history or history[-1].get(choice_col) != choice_disp:
         history.append(new_row)
         # Advance shock seed so next slider move gets a fresh draw
@@ -650,62 +677,31 @@ def _shock_banner(shocks: dict | None, ms: MarketState) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Shock controls — always ON, role-aware correlated amplification (item 7)
+# Shock controls — pure iid only (experiment mode); no-op in correlated mode
 # ---------------------------------------------------------------------------
 def render_shock_controls(ms: MarketState,
                           role: str = "price_setter",
                           choice_val: float | None = None):
     """
-    Shocks are always enabled. The eps_d / eps_s magnitudes are amplified
-    based on the student's role and choice value, creating role-specific
-    correlated idiosyncratic disturbances:
-
-    price_setter:    eps_d amplified proportional to price deviation from default
-                     (high price → larger demand uncertainty)
-    ad_manager:      eps_d amplified proportional to ad spend
-                     (aggressive advertising → noisier demand response)
-    manufacturer:    eps_s amplified proportional to wholesale price deviation
-                     (high WC → larger supply uncertainty / retailer resistance)
+    Experiment mode: apply pure iid eps_d and eps_s (uncorrelated with anything).
+    Correlated mode: shocks already embedded inside _draw_correlated_others;
+                     return ms unchanged.
     """
-    import copy
+    exp_mode = st.session_state.get("experiment_mode", False)
+    if not exp_mode:
+        return ms, None   # shocks already in ms from _draw_correlated_others
+
+    # Experiment mode — pure iid only (spec item 7)
     seed = st.session_state.get("shock_seed_auto", 42)
-    base_shocks = draw_shocks(seed=int(seed))
-
-    if choice_val is not None:
-        from core.model import PRODUCT_DEFAULTS
-        d = PRODUCT_DEFAULTS[ms.product]
-
-        if role == "price_setter":
-            # Amplify demand shock: high prices create more demand uncertainty
-            price_default = d["own_price"]
-            deviation = abs(choice_val - price_default) / (price_default + 1e-9)
-            # Scale eps_d by up to 2.5× at extreme prices
-            amplifier = 1.0 + 1.5 * min(deviation, 1.0)
-            base_shocks = dict(base_shocks)
-            base_shocks["eps_d"] = base_shocks["eps_d"] * amplifier
-            # Also make wholesale co-move more strongly (already handled in
-            # _draw_correlated_others, but reinforce via supply shock too)
-            base_shocks["eps_s"] = base_shocks["eps_s"] * (1.0 + 0.5 * min(deviation, 1.0))
-
-        elif role == "ad_manager":
-            # Amplify demand shock: more advertising → noisier demand
-            ad_default = d["ad_default"]
-            deviation = abs(choice_val - ad_default) / (ad_default + 1e-9)
-            amplifier = 1.0 + 1.2 * min(deviation, 1.0)
-            base_shocks = dict(base_shocks)
-            base_shocks["eps_d"] = base_shocks["eps_d"] * amplifier
-
-        else:  # manufacturer
-            # Amplify supply shock: high WC → retailer supply more uncertain
-            wc_default = d["wc_default"]
-            deviation = abs(choice_val - wc_default) / (wc_default + 1e-9)
-            amplifier = 1.0 + 1.5 * min(deviation, 1.0)
-            base_shocks = dict(base_shocks)
-            base_shocks["eps_s"] = base_shocks["eps_s"] * amplifier
-
-    ms_with = apply_shocks(ms, base_shocks)
-    return ms_with, base_shocks
-
+    rng  = random.Random(int(seed))
+    sigma_iid = 0.06
+    eps_d = rng.gauss(0.0, 1.0) * sigma_iid
+    eps_s = rng.gauss(0.0, 1.0) * sigma_iid
+    ms2 = dataclasses.replace(ms, eps_d=eps_d, eps_s=eps_s,
+                              eta_c1p=1.0, eta_c2p=1.0,
+                              eta_c1a=1.0, eta_c2a=1.0,
+                              eta_c1wc=1.0, eta_c2wc=1.0)
+    return ms2, {"eps_d": eps_d, "eps_s": eps_s}
 
 # ---------------------------------------------------------------------------
 # Equilibrium alert
