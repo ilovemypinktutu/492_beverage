@@ -48,8 +48,9 @@ PAGE_MAP = {
 # Item 1: "How the simulation works" moved here.
 with st.sidebar:
     st.markdown("### 🧃 Navigation")
-    st.page_link("app.py",                 label="🏠 Home / Setup")
-    st.page_link("pages/0_📖_Glossary.py", label="📖 Glossary")
+    st.page_link("app.py",                       label="🏠 Home / Setup")
+    st.page_link("pages/00_ℹ️_How_It_Works.py", label="ℹ️ How It Works")
+    st.page_link("pages/0_📖_Glossary.py",       label="📖 Glossary")
 
     st.markdown("---")
     with st.expander("ℹ️ How the simulation works", expanded=False):
