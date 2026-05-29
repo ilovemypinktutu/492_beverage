@@ -52,29 +52,6 @@ with st.sidebar:
     st.page_link("pages/00_ℹ️_How_It_Works.py", label="ℹ️ How It Works")
     st.page_link("pages/0_📖_Glossary.py",       label="📖 Glossary")
 
-    st.markdown("---")
-    with st.expander("ℹ️ How the simulation works", expanded=False):
-        st.markdown("""
-Each product market has its own **demand** and **supply** function.
-
-**Demand** depends on your retail price, competitor prices, your ad spend,
-competitor ad spends, local income, unemployment rate, population density,
-season index, temperature, and product-specific factors (caffeine appeal for
-coffee, alcohol premium for beer, health sensitivity for soda).
-
-**Supply** depends on your retail price, wholesale cost, tax rate, transport
-cost, upstream market power, employee satisfaction, energy cost, and store count.
-
-**Equilibrium** price and quantity are solved numerically.
-
-**Profit** = Revenue − COGS − Operating Expenses − Tax.
-Each role has a profit-maximizing choice at an interior point — finding it
-is the core learning objective.
-
-In **correlated mode**, every time you move your slider the model draws
-correlated values for all other market variables from a joint distribution
-conditioned on your choice.
-""")
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 st.markdown('<div class="title">🧃 Beverage Market Simulator</div>',
