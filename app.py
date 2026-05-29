@@ -49,8 +49,8 @@ PAGE_MAP = {
 with st.sidebar:
     st.markdown("### 🧃 Navigation")
     st.page_link("app.py",                       label="🏠 Home / Setup")
-    st.page_link("pages/00_How_It_Works.py", label="ℹ️ How It Works")
-    st.page_link("pages/0_Glossary.py",       label="📖 Glossary")
+    st.page_link("pages/A_How_It_Works.py", label="ℹ️ How It Works")
+    st.page_link("pages/B_Glossary.py",       label="📖 Glossary")
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
