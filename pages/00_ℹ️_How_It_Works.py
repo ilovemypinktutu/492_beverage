@@ -107,8 +107,13 @@ The **quantity sold** is `min(Qd, Qs)` at your chosen price:
 
 ### Your profit
 
-$$\\text{Profit} = (\\text{Price} - \\text{Wholesale Cost}) \\times Q_{\\text{sold}}
-- \\text{Ad Spend} - \\text{Transport} - \\text{Fixed Overhead} - \\text{Tax}$$
+> **Profit = (Price − Wholesale Cost) × Units Sold − Ad Spend − Transport − Fixed Overhead − Tax**
+
+Breaking that down:
+- **(Price − Wholesale Cost)** is your contribution margin per unit
+- **× Units Sold** gives your gross profit
+- Subtracting **Ad Spend + Transport + Fixed Overhead** gives EBIT
+- Subtracting **Tax** gives net profit
 
 Each role has a **profit-maximizing choice** at an interior point within the slider range.
 Your goal is to find it by experimenting.
