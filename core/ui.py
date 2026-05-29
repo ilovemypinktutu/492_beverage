@@ -138,6 +138,7 @@ def render_sidebar_nav(product: str, role: str) -> None:
     with st.sidebar:
         st.markdown("### 🧃 Navigation")
         st.page_link("app.py",               label="🏠 Home / Setup")
+        st.page_link("pages/00_ℹ️_How_It_Works.py", label="ℹ️ How It Works")
         st.page_link("pages/0_📖_Glossary.py", label="📖 Glossary")
         key = (product, role)
         if key in PAGE_MAP:
@@ -397,14 +398,6 @@ def render_choice_slider(ms: MarketState, role: str):
                         help="Higher WC earns more margin per unit but reduces retailer supply volume.")
         st.caption(f"Selected: **${val:.2f}/unit**")
 
-    if not exp_mode:
-        st.caption(
-            "📊 *Correlated mode*: other market variables adjust automatically "
-            "in response to your choice."
-        )
-    else:
-        st.caption("🔬 *Free-play mode*: all variables are fixed at your sidebar settings.")
-
     st.markdown('</div>', unsafe_allow_html=True)
 
     # Apply correlated draw if in correlated mode
@@ -446,7 +439,7 @@ def render_results_table(eq: EquilibriumResult, fin: Financials,
         "Eq. Price":       f"${eq.price_eq:.3f}",
         "Units Sold":      f"{fin.q_sold:,.0f}",
         "Revenue":         fmtk(fin.revenue),
-        "COGS":            fmtk(fin.cogs),
+        "Variable Cost":   fmtk(fin.cogs),
         "Gross Profit":    fmtk(fin.gross_profit),
         "OpEx":            fmtk(fin.total_opex),
         "Net Profit":      fmtk(fin.net_profit),
@@ -461,17 +454,13 @@ def render_results_table(eq: EquilibriumResult, fin: Financials,
 
     # Inline term definitions (items 5 & 6)
     st.caption(
-        "ℹ️ **COGS** (Cost of Goods Sold) = Wholesale cost × Units sold — "
+        "ℹ️ **Variable Cost** = Wholesale cost × Units sold — "
         "the direct cost of acquiring the inventory you sold.  "
         "**Gross Profit** = Revenue − COGS — profit before operating expenses.  "
         "**Net Profit** = EBIT × (1 − tax rate) — the bottom line after all costs and taxes."
     )
 
-    # Profit signal
-    if fin.net_profit > 0:
-        st.success(f"✅ Profitable — Net profit **{fmtk(fin.net_profit)}**/week")
-    else:
-        st.error(f"❌ Loss — **{fmtk(fin.net_profit)}**/week. Try adjusting your {choice_col.lower()}.")
+
 
 
 # ---------------------------------------------------------------------------
@@ -493,7 +482,6 @@ def render_history(eq: EquilibriumResult, fin: Financials,
     else:
         choice_col = "Wholesale ($/unit)"; choice_disp = round(choice_val, 2)
 
-    mode = "Correlated" if not st.session_state.get("experiment_mode") else "Free-play"
     new_row = {
         # ── Choice variable ──
         choice_col:              choice_disp,
@@ -501,7 +489,7 @@ def render_history(eq: EquilibriumResult, fin: Financials,
         "Eq. Price ($)":         round(eq.price_eq, 4),
         "Units Sold":            int(fin.q_sold),
         "Revenue ($)":           round(fin.revenue, 2),
-        "COGS ($)":              round(fin.cogs, 2),
+        "Variable Cost ($)":     round(fin.cogs, 2),
         "Gross Profit ($)":      round(fin.gross_profit, 2),
         "OpEx ($)":              round(fin.total_opex, 2),
         "Net Profit ($)":        round(fin.net_profit, 2),
@@ -530,8 +518,6 @@ def render_history(eq: EquilibriumResult, fin: Financials,
         "Energy Cost Idx":       round(ms.energy_cost_idx, 2),
         "Store Count":           int(ms.store_count),
         "Cap. Utilization (%)":  round(ms.capacity_util_pct, 1),
-        # ── Mode ──
-        "Mode":                  mode,
     }
     if role == "manufacturer":
         new_row["Mfr Revenue ($)"] = round(fin.manufacturer_revenue, 2)
@@ -568,18 +554,7 @@ def render_history(eq: EquilibriumResult, fin: Financials,
     else:
         st.caption("No results recorded yet. Move the slider to generate your first result.")
 
-    # Correlated mode: expose a seed control so students can see different draws
-    if not st.session_state.get("experiment_mode", False):
-        st.markdown("---")
-        new_seed = st.number_input(
-            "🎲 Market draw (change to see different correlated scenarios)",
-            min_value=0, max_value=9999,
-            value=st.session_state.get("corr_seed", 0), step=1,
-            key="corr_seed_input",
-            help="Each value gives a different correlated draw of competitor variables. "
-                 "Changing this simulates a different realization of market conditions."
-        )
-        st.session_state["corr_seed"] = new_seed
+
 
 
 # ---------------------------------------------------------------------------
@@ -599,7 +574,7 @@ def render_charts(ms: MarketState, eq: EquilibriumResult,
 
 def _chart_revenue_pie(fin: Financials, color: str) -> None:
     """Donut: how revenue is split between costs, taxes, and profit."""
-    labels = ["COGS", "Ad Spend", "Transport", "Fixed OH", "Tax"]
+    labels = ["Variable Cost", "Ad Spend", "Transport", "Fixed OH", "Tax"]
     vals   = [max(fin.cogs, 0), max(fin.ad_expense, 0),
               max(fin.transport_expense, 0), max(fin.fixed_overhead, 0),
               max(fin.tax_amount, 0)]
@@ -634,7 +609,7 @@ def _chart_revenue_pie(fin: Financials, color: str) -> None:
 
 def _chart_cost_bar(fin: Financials, color: str) -> None:
     """Horizontal bar: cost components stacked vs gross profit."""
-    categories = ["COGS", "Ad Spend", "Transport", "Fixed OH", "Tax", "Net Profit"]
+    categories = ["Variable Cost", "Ad Spend", "Transport", "Fixed OH", "Tax", "Net Profit"]
     values = [fin.cogs, fin.ad_expense, fin.transport_expense,
               fin.fixed_overhead, fin.tax_amount, fin.net_profit]
     colors_bar = [color, "#0D7377", "#2980B9", "#8E44AD", "#E67E22",
@@ -695,20 +670,61 @@ def _shock_banner(shocks: dict | None, ms: MarketState) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Shock controls — always ON, seed drawn from session state
-# No sidebar UI; shocks are applied automatically every run.
+# Shock controls — always ON, role-aware correlated amplification (item 7)
 # ---------------------------------------------------------------------------
-def render_shock_controls(ms: MarketState):
+def render_shock_controls(ms: MarketState,
+                          role: str = "price_setter",
+                          choice_val: float | None = None):
     """
-    Shocks are always enabled (default ON per spec).
-    The seed increments automatically each time the student moves their
-    slider (tracked via a counter in session_state), giving a fresh draw
-    each decision without requiring any user action.
+    Shocks are always enabled. The eps_d / eps_s magnitudes are amplified
+    based on the student's role and choice value, creating role-specific
+    correlated idiosyncratic disturbances:
+
+    price_setter:    eps_d amplified proportional to price deviation from default
+                     (high price → larger demand uncertainty)
+    ad_manager:      eps_d amplified proportional to ad spend
+                     (aggressive advertising → noisier demand response)
+    manufacturer:    eps_s amplified proportional to wholesale price deviation
+                     (high WC → larger supply uncertainty / retailer resistance)
     """
+    import copy
     seed = st.session_state.get("shock_seed_auto", 42)
-    shocks = draw_shocks(seed=int(seed))
-    ms_with = apply_shocks(ms, shocks)
-    return ms_with, shocks
+    base_shocks = draw_shocks(seed=int(seed))
+
+    if choice_val is not None:
+        from core.model import PRODUCT_DEFAULTS
+        d = PRODUCT_DEFAULTS[ms.product]
+
+        if role == "price_setter":
+            # Amplify demand shock: high prices create more demand uncertainty
+            price_default = d["own_price"]
+            deviation = abs(choice_val - price_default) / (price_default + 1e-9)
+            # Scale eps_d by up to 2.5× at extreme prices
+            amplifier = 1.0 + 1.5 * min(deviation, 1.0)
+            base_shocks = dict(base_shocks)
+            base_shocks["eps_d"] = base_shocks["eps_d"] * amplifier
+            # Also make wholesale co-move more strongly (already handled in
+            # _draw_correlated_others, but reinforce via supply shock too)
+            base_shocks["eps_s"] = base_shocks["eps_s"] * (1.0 + 0.5 * min(deviation, 1.0))
+
+        elif role == "ad_manager":
+            # Amplify demand shock: more advertising → noisier demand
+            ad_default = d["ad_default"]
+            deviation = abs(choice_val - ad_default) / (ad_default + 1e-9)
+            amplifier = 1.0 + 1.2 * min(deviation, 1.0)
+            base_shocks = dict(base_shocks)
+            base_shocks["eps_d"] = base_shocks["eps_d"] * amplifier
+
+        else:  # manufacturer
+            # Amplify supply shock: high WC → retailer supply more uncertain
+            wc_default = d["wc_default"]
+            deviation = abs(choice_val - wc_default) / (wc_default + 1e-9)
+            amplifier = 1.0 + 1.5 * min(deviation, 1.0)
+            base_shocks = dict(base_shocks)
+            base_shocks["eps_s"] = base_shocks["eps_s"] * amplifier
+
+    ms_with = apply_shocks(ms, base_shocks)
+    return ms_with, base_shocks
 
 
 # ---------------------------------------------------------------------------
