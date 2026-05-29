@@ -28,8 +28,9 @@ st.markdown("""
 
 with st.sidebar:
     st.markdown("### 🧃 Navigation")
-    st.page_link("app.py", label="🏠 Home / Setup")
-    st.page_link("pages/0_📖_Glossary.py", label="📖 Glossary")
+    st.page_link("app.py",                       label="🏠 Home / Setup")
+    st.page_link("pages/00_ℹ️_How_It_Works.py", label="ℹ️ How It Works")
+    st.page_link("pages/0_📖_Glossary.py",       label="📖 Glossary")
     confirmed_product = st.session_state.get("confirmed_product")
     confirmed_role    = st.session_state.get("confirmed_role")
     PAGE_MAP = {
