@@ -31,16 +31,18 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# Each entry: (file_path_for_st.page_link, url_slug_for_href, display_label)
+# Streamlit URL slug = filename minus leading digit+underscore, minus .py extension.
 PAGE_MAP = {
-    ("coffee","price_setter"): ("pages/1_Coffee_Price_Setter.py",  "☕ Coffee — Price Setter"),
-    ("coffee","ad_manager"):   ("pages/2_Coffee_Ad_Manager.py",    "☕ Coffee — Ad Manager"),
-    ("coffee","manufacturer"): ("pages/3_Coffee_Manufacturer.py",  "☕ Coffee — Manufacturer"),
-    ("soda",  "price_setter"): ("pages/4_Soda_Price_Setter.py",   "🥤 Soda — Price Setter"),
-    ("soda",  "ad_manager"):   ("pages/5_Soda_Ad_Manager.py",     "🥤 Soda — Ad Manager"),
-    ("soda",  "manufacturer"): ("pages/6_Soda_Manufacturer.py",   "🥤 Soda — Manufacturer"),
-    ("beer",  "price_setter"): ("pages/7_Beer_Price_Setter.py",   "🍺 Beer — Price Setter"),
-    ("beer",  "ad_manager"):   ("pages/8_Beer_Ad_Manager.py",     "🍺 Beer — Ad Manager"),
-    ("beer",  "manufacturer"): ("pages/9_Beer_Manufacturer.py",   "🍺 Beer — Manufacturer"),
+    ("coffee","price_setter"): ("pages/1_Coffee_Price_Setter.py", "Coffee_Price_Setter",  "☕ Coffee — Price Setter"),
+    ("coffee","ad_manager"):   ("pages/2_Coffee_Ad_Manager.py",   "Coffee_Ad_Manager",    "☕ Coffee — Ad Manager"),
+    ("coffee","manufacturer"): ("pages/3_Coffee_Manufacturer.py", "Coffee_Manufacturer",  "☕ Coffee — Manufacturer"),
+    ("soda",  "price_setter"): ("pages/4_Soda_Price_Setter.py",  "Soda_Price_Setter",    "🥤 Soda — Price Setter"),
+    ("soda",  "ad_manager"):   ("pages/5_Soda_Ad_Manager.py",    "Soda_Ad_Manager",      "🥤 Soda — Ad Manager"),
+    ("soda",  "manufacturer"): ("pages/6_Soda_Manufacturer.py",  "Soda_Manufacturer",    "🥤 Soda — Manufacturer"),
+    ("beer",  "price_setter"): ("pages/7_Beer_Price_Setter.py",  "Beer_Price_Setter",    "🍺 Beer — Price Setter"),
+    ("beer",  "ad_manager"):   ("pages/8_Beer_Ad_Manager.py",    "Beer_Ad_Manager",      "🍺 Beer — Ad Manager"),
+    ("beer",  "manufacturer"): ("pages/9_Beer_Manufacturer.py",  "Beer_Manufacturer",    "🍺 Beer — Manufacturer"),
 }
 
 # ── Sidebar ─────────────────────────────────────────────────────────────────
@@ -187,11 +189,11 @@ if product and role:
     st.session_state["confirmed_role"]    = role
 
     key = (product, role)
-    page_path, page_label = PAGE_MAP[key]
+    page_path, page_slug, page_label = PAGE_MAP[key]
 
     color = product_info[product][2]
     st.markdown(f"""
-<a href="{page_path}" target="_self" style="
+<a href="{page_slug}" target="_self" style="
     display: block;
     background: linear-gradient(135deg, {color}, {color}bb);
     color: white;
