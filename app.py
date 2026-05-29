@@ -189,12 +189,26 @@ if product and role:
     key = (product, role)
     page_path, page_label = PAGE_MAP[key]
 
-    st.success(
-        f"✅ **{pe} {pl} · {re} {rl}** — {mode_label}  \n"
-        f"Your simulation page is now unlocked in the sidebar. "
-        f"Click **▶ {page_label}** to begin."
-    )
-    st.page_link(page_path, label=f"▶ Open {page_label}", icon="🚀")
+    color = product_info[product][2]
+    st.markdown(f"""
+<a href="{page_path}" target="_self" style="
+    display: block;
+    background: linear-gradient(135deg, {color}, {color}bb);
+    color: white;
+    text-decoration: none;
+    border-radius: 14px;
+    padding: 1.4rem 2rem;
+    font-size: 1.25rem;
+    font-weight: 700;
+    text-align: center;
+    box-shadow: 0 4px 18px rgba(0,0,0,0.15);
+    transition: opacity 0.15s;
+    margin-top: 0.5rem;
+">
+    {re} {rl} &nbsp;·&nbsp; {pe} {pl}<br>
+    <span style="font-size:0.9rem;font-weight:400;opacity:0.9">Click to open your simulation →</span>
+</a>
+""", unsafe_allow_html=True)
 
 elif not product:
     st.info("👆 Select your product in Step 1 to continue.")
