@@ -452,13 +452,7 @@ def render_results_table(eq: EquilibriumResult, fin: Financials,
 
     st.dataframe(pd.DataFrame([row]), use_container_width=True, hide_index=True)
 
-    # Inline term definitions (items 5 & 6)
-    st.caption(
-        "ℹ️ **Variable Cost** = Wholesale cost × Units sold — "
-        "the direct cost of acquiring the inventory you sold.  "
-        "**Gross Profit** = Revenue − COGS — profit before operating expenses.  "
-        "**Net Profit** = EBIT × (1 − tax rate) — the bottom line after all costs and taxes."
-    )
+
 
 
 
@@ -601,10 +595,6 @@ def _chart_revenue_pie(fin: Financials, color: str) -> None:
         legend=dict(orientation="v", x=1.02, y=0.5),
     )
     st.plotly_chart(fig, use_container_width=True)
-    st.caption(
-        "Shows how each dollar of revenue is allocated. "
-        "A healthy business has a substantial green 'Net Profit' slice."
-    )
 
 
 def _chart_cost_bar(fin: Financials, color: str) -> None:
@@ -633,16 +623,6 @@ def _chart_cost_bar(fin: Financials, color: str) -> None:
         xaxis_title="Dollars ($)",
     )
     st.plotly_chart(fig, use_container_width=True)
-
-    # Summary metrics below the chart
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Revenue",      fmtk(fin.revenue))
-    c2.metric("Total Costs",  fmtk(fin.revenue - fin.net_profit))
-    c3.metric("Net Profit",   fmtk(fin.net_profit),
-              delta=f"{fin.net_margin_pct:.1f}% margin")
-    c4.metric("Break-even",
-              f"{fin.break_even_units:,.0f} u/wk"
-              if fin.break_even_units != float("inf") else "N/A")
 
 
 # ---------------------------------------------------------------------------
