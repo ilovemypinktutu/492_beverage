@@ -31,18 +31,16 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Each entry: (file_path_for_st.page_link, url_slug_for_href, display_label)
-# Streamlit URL slug = filename minus leading digit+underscore, minus .py extension.
 PAGE_MAP = {
-    ("coffee","price_setter"): ("pages/1_Coffee_Price_Setter.py", "Coffee_Price_Setter",  "☕ Coffee — Price Setter"),
-    ("coffee","ad_manager"):   ("pages/2_Coffee_Ad_Manager.py",   "Coffee_Ad_Manager",    "☕ Coffee — Ad Manager"),
-    ("coffee","manufacturer"): ("pages/3_Coffee_Manufacturer.py", "Coffee_Manufacturer",  "☕ Coffee — Manufacturer"),
-    ("soda",  "price_setter"): ("pages/4_Soda_Price_Setter.py",  "Soda_Price_Setter",    "🥤 Soda — Price Setter"),
-    ("soda",  "ad_manager"):   ("pages/5_Soda_Ad_Manager.py",    "Soda_Ad_Manager",      "🥤 Soda — Ad Manager"),
-    ("soda",  "manufacturer"): ("pages/6_Soda_Manufacturer.py",  "Soda_Manufacturer",    "🥤 Soda — Manufacturer"),
-    ("beer",  "price_setter"): ("pages/7_Beer_Price_Setter.py",  "Beer_Price_Setter",    "🍺 Beer — Price Setter"),
-    ("beer",  "ad_manager"):   ("pages/8_Beer_Ad_Manager.py",    "Beer_Ad_Manager",      "🍺 Beer — Ad Manager"),
-    ("beer",  "manufacturer"): ("pages/9_Beer_Manufacturer.py",  "Beer_Manufacturer",    "🍺 Beer — Manufacturer"),
+    ("coffee","price_setter"): ("pages/1_Coffee_Price_Setter.py",  "☕ Coffee — Price Setter"),
+    ("coffee","ad_manager"):   ("pages/2_Coffee_Ad_Manager.py",    "☕ Coffee — Ad Manager"),
+    ("coffee","manufacturer"): ("pages/3_Coffee_Manufacturer.py",  "☕ Coffee — Manufacturer"),
+    ("soda",  "price_setter"): ("pages/4_Soda_Price_Setter.py",   "🥤 Soda — Price Setter"),
+    ("soda",  "ad_manager"):   ("pages/5_Soda_Ad_Manager.py",     "🥤 Soda — Ad Manager"),
+    ("soda",  "manufacturer"): ("pages/6_Soda_Manufacturer.py",   "🥤 Soda — Manufacturer"),
+    ("beer",  "price_setter"): ("pages/7_Beer_Price_Setter.py",   "🍺 Beer — Price Setter"),
+    ("beer",  "ad_manager"):   ("pages/8_Beer_Ad_Manager.py",     "🍺 Beer — Ad Manager"),
+    ("beer",  "manufacturer"): ("pages/9_Beer_Manufacturer.py",   "🍺 Beer — Manufacturer"),
 }
 
 # ── Sidebar ─────────────────────────────────────────────────────────────────
@@ -189,28 +187,31 @@ if product and role:
     st.session_state["confirmed_role"]    = role
 
     key = (product, role)
-    page_path, page_slug, page_label = PAGE_MAP[key]
+    page_path, page_label = PAGE_MAP[key]
 
     color = product_info[product][2]
+
+    # Styled container — clicking the Streamlit button inside preserves session_state
     st.markdown(f"""
-<a href="{page_slug}" target="_self" style="
-    display: block;
+<div style="
     background: linear-gradient(135deg, {color}, {color}bb);
-    color: white;
-    text-decoration: none;
     border-radius: 14px;
-    padding: 1.4rem 2rem;
-    font-size: 1.25rem;
-    font-weight: 700;
-    text-align: center;
+    padding: 0.2rem 2rem 1.2rem 2rem;
     box-shadow: 0 4px 18px rgba(0,0,0,0.15);
-    transition: opacity 0.15s;
     margin-top: 0.5rem;
+    text-align: center;
 ">
-    {re} {rl} &nbsp;·&nbsp; {pe} {pl}<br>
-    <span style="font-size:0.9rem;font-weight:400;opacity:0.9">Click to open your simulation →</span>
-</a>
+<p style="color:white;font-size:1.2rem;font-weight:700;margin:1rem 0 0.2rem">
+    {re} {rl} &nbsp;·&nbsp; {pe} {pl}
+</p>
+<p style="color:white;font-size:0.88rem;opacity:0.9;margin-bottom:0.8rem">
+    Your simulation is ready — click the button below to open it.
+</p>
+</div>
 """, unsafe_allow_html=True)
+
+    if st.button(f"▶ Open {page_label}", use_container_width=True, type="primary"):
+        st.switch_page(page_path)
 
 elif not product:
     st.info("👆 Select your product in Step 1 to continue.")
