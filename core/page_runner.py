@@ -66,16 +66,16 @@ def run_page(product: str, role: str) -> None:
     )
     inject_css(product)
 
-    # ── Guard ──
-    confirmed_product = st.session_state.get("confirmed_product")
-    confirmed_role    = st.session_state.get("confirmed_role")
-    if confirmed_product != product or confirmed_role != role:
-        st.warning(
-            "⚠️ Please go to the **Home / Setup** page, choose your product "
-            "and role, then return here via the sidebar link."
-        )
-        st.page_link("app.py", label="🏠 Go to Home / Setup")
-        st.stop()
+    # ── Guard: auto-confirm if missing from session_state ──
+    # When st.switch_page() is used, session_state IS preserved, so confirmed_*
+    # will already be set. If a student navigates directly via URL, we still
+    # accept them — each page file hardcodes its own product+role, so the page
+    # itself IS the access control. We just ensure confirmed_* is set so the
+    # sidebar nav and history keys work correctly.
+    if st.session_state.get("confirmed_product") != product:
+        st.session_state["confirmed_product"] = product
+    if st.session_state.get("confirmed_role") != role:
+        st.session_state["confirmed_role"] = role
 
     # ── Sidebar nav ──
     render_sidebar_nav(product, role)
